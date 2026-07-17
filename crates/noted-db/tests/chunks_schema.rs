@@ -26,11 +26,11 @@ async fn embedding_column_is_768_dimensional() {
     sqlx::query("INSERT INTO chunks (content_hash, text, token_estimate) VALUES ('h768', 't', 1)")
         .execute(&p).await.unwrap();
     let v768 = format!("[{}]", vec!["0.1"; 768].join(","));
-    sqlx::query(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO embeddings (content_hash, model_id, embedding)
-         VALUES ('h768', 'test', '{v768}'::vector)"
-    )))
-    .execute(&p).await.unwrap();
+    sqlx::query("INSERT INTO embeddings (content_hash, model_id, embedding) VALUES ($1, $2, $3::vector)")
+        .bind("h768")
+        .bind("test")
+        .bind(&v768)
+        .execute(&p).await.unwrap();
 
     sqlx::query("INSERT INTO chunks (content_hash, text, token_estimate) VALUES ('hbad', 't', 1)")
         .execute(&p).await.unwrap();
@@ -49,10 +49,10 @@ async fn embedding_column_is_768_dimensional() {
 async fn embedding_requires_an_existing_chunk() {
     let p = pool().await;
     let v = format!("[{}]", vec!["0.1"; 768].join(","));
-    let orphan = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO embeddings (content_hash, model_id, embedding)
-         VALUES ('no-such-chunk', 'test', '{v}'::vector)"
-    )))
-    .execute(&p).await;
+    let orphan = sqlx::query("INSERT INTO embeddings (content_hash, model_id, embedding) VALUES ($1, $2, $3::vector)")
+        .bind("no-such-chunk")
+        .bind("test")
+        .bind(&v)
+        .execute(&p).await;
     assert!(orphan.is_err(), "embeddings must FK to chunks");
 }

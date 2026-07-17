@@ -45,5 +45,4 @@ CREATE TABLE embeddings (
 CREATE INDEX embeddings_hnsw_idx ON embeddings
     USING hnsw (embedding vector_cosine_ops);
 
--- The dirty-set query joins blocks -> chunks on content_hash.
 CREATE INDEX chunks_created_at_idx ON chunks (created_at);
