@@ -65,11 +65,12 @@ pub async fn children(
     .await
 }
 
-pub async fn rename(pool: &PgPool, id: Uuid, title: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE pages SET title = $2, updated_at = now() WHERE id = $1")
+/// Returns `Ok(true)` if a page was renamed, `Ok(false)` if no such page exists.
+pub async fn rename(pool: &PgPool, id: Uuid, title: &str) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("UPDATE pages SET title = $2, updated_at = now() WHERE id = $1")
         .bind(id)
         .bind(title)
         .execute(pool)
         .await?;
-    Ok(())
+    Ok(result.rows_affected() > 0)
 }

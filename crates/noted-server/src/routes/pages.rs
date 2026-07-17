@@ -19,7 +19,14 @@ pub async fn create(
     Json(body): Json<CreateBody>,
 ) -> Result<(StatusCode, Json<Page>), AppError> {
     let title = body.title.as_deref().unwrap_or("Untitled");
-    let page = pages::create(&st.pool, body.workspace_id, body.parent_id, title).await?;
+    let page = pages::create(&st.pool, body.workspace_id, body.parent_id, title)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db) if db.is_foreign_key_violation() => {
+                AppError::InvalidReference
+            }
+            _ => AppError::Db(e),
+        })?;
     Ok((StatusCode::CREATED, Json(page)))
 }
 
@@ -53,6 +60,10 @@ pub async fn rename(
     Path(id): Path<Uuid>,
     Json(body): Json<RenameBody>,
 ) -> Result<StatusCode, AppError> {
-    pages::rename(&st.pool, id, &body.title).await?;
-    Ok(StatusCode::NO_CONTENT)
+    let renamed = pages::rename(&st.pool, id, &body.title).await?;
+    if renamed {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(AppError::NotFound)
+    }
 }

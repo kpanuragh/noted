@@ -10,6 +10,8 @@ pub enum AppError {
     NotFound,
     #[error("pgvector {found} is below the required 0.8")]
     PgvectorTooOld { found: String },
+    #[error("unknown workspace_id or parent_id")]
+    InvalidReference,
 }
 
 impl IntoResponse for AppError {
@@ -18,6 +20,7 @@ impl IntoResponse for AppError {
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::PgvectorTooOld { .. } => StatusCode::SERVICE_UNAVAILABLE,
+            AppError::InvalidReference => StatusCode::BAD_REQUEST,
         };
         // Never leak SQL detail to clients; log it instead.
         if let AppError::Db(ref e) = self {

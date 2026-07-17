@@ -57,3 +57,109 @@ async fn get_unknown_page_returns_404() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn get_existing_page_returns_200_with_body() {
+    let (app, ws) = test_app().await;
+    let create_res = app
+        .clone()
+        .oneshot(post("/api/pages", serde_json::json!({
+            "workspace_id": ws, "title": "Fetchable"
+        })))
+        .await
+        .unwrap();
+    assert_eq!(create_res.status(), StatusCode::CREATED);
+    let created = body_json(create_res).await;
+    let id = created["id"].as_str().unwrap();
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/pages/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let json = body_json(res).await;
+    assert_eq!(json["id"], created["id"]);
+    assert_eq!(json["title"], "Fetchable");
+}
+
+#[tokio::test]
+async fn list_returns_only_direct_children() {
+    let (app, ws) = test_app().await;
+
+    let root_res = app
+        .clone()
+        .oneshot(post("/api/pages", serde_json::json!({
+            "workspace_id": ws, "title": "Root"
+        })))
+        .await
+        .unwrap();
+    let root = body_json(root_res).await;
+    let root_id = root["id"].as_str().unwrap();
+
+    let child_res = app
+        .clone()
+        .oneshot(post("/api/pages", serde_json::json!({
+            "workspace_id": ws, "parent_id": root_id, "title": "Child"
+        })))
+        .await
+        .unwrap();
+    let child = body_json(child_res).await;
+    let child_id = child["id"].as_str().unwrap();
+
+    let _grandchild_res = app
+        .clone()
+        .oneshot(post("/api/pages", serde_json::json!({
+            "workspace_id": ws, "parent_id": child_id, "title": "Grandchild"
+        })))
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/pages?workspace_id={ws}&parent_id={root_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let json = body_json(res).await;
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "expected exactly one direct child, got {json:?}");
+    assert_eq!(arr[0]["id"], child["id"]);
+}
+
+#[tokio::test]
+async fn rename_missing_page_returns_404() {
+    let (app, _ws) = test_app().await;
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/pages/{}", uuid::Uuid::new_v4()))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::json!({"title": "x"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn create_with_unknown_workspace_returns_400() {
+    let (app, _ws) = test_app().await;
+    let res = app
+        .oneshot(post("/api/pages", serde_json::json!({
+            "workspace_id": uuid::Uuid::new_v4(), "title": "Orphan"
+        })))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}

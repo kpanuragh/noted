@@ -45,7 +45,8 @@ async fn rename_updates_title_and_bumps_updated_at() {
     let (pool, ws) = setup().await;
     let p = pages::create(&pool, ws, None, "Before").await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    pages::rename(&pool, p.id, "After").await.unwrap();
+    let renamed = pages::rename(&pool, p.id, "After").await.unwrap();
+    assert!(renamed, "rename() must return true when a page was updated");
     let after = pages::get(&pool, p.id).await.unwrap().unwrap();
     assert_eq!(after.title, "After");
     assert!(
@@ -54,4 +55,11 @@ async fn rename_updates_title_and_bumps_updated_at() {
         p.updated_at,
         after.updated_at
     );
+}
+
+#[tokio::test]
+async fn rename_unknown_page_returns_false() {
+    let (pool, _ws) = setup().await;
+    let renamed = pages::rename(&pool, uuid::Uuid::new_v4(), "Nope").await.unwrap();
+    assert!(!renamed, "rename() must return false when no page matches the id");
 }
