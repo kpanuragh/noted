@@ -82,6 +82,11 @@ pub async fn pending(
     model_id: &str,
     limit: i64,
 ) -> Result<Vec<PendingChunk>, sqlx::Error> {
+    // ORDER BY is for DETERMINISM, not starvation: `LIMIT` without it lets
+    // Postgres return any rows it likes, which made tests flaky. It is emphatically
+    // NOT a fairness mechanism — none is needed. Every batch that succeeds inserts
+    // into `embeddings`, so the set difference this query computes strictly shrinks;
+    // progress is monotonic whatever order the rows come back in.
     sqlx::query_as::<_, PendingChunk>(
         "SELECT DISTINCT c.content_hash, c.text
          FROM page_chunks pc
@@ -89,6 +94,7 @@ pub async fn pending(
          LEFT JOIN embeddings e
            ON e.content_hash = c.content_hash AND e.model_id = $1
          WHERE e.content_hash IS NULL
+         ORDER BY c.content_hash
          LIMIT $2",
     )
     .bind(model_id)
@@ -112,6 +118,37 @@ pub async fn store_embedding(
     .bind(content_hash)
     .bind(model_id)
     .bind(Vector::from(embedding.to_vec()))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Store a whole batch of embeddings in ONE round trip.
+///
+/// The worker embeds `BATCH_SIZE` chunks at a time; storing them with
+/// `store_embedding` in a loop is N+1 round trips per batch — the exact pattern
+/// `blocks::replace_for_page` already replaced with a single `UNNEST` insert.
+/// Same semantics as `store_embedding`, just set-at-a-time.
+pub async fn store_embeddings_batch(
+    pool: &PgPool,
+    model_id: &str,
+    rows: &[(String, Vec<f32>)],
+) -> Result<(), sqlx::Error> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let hashes: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
+    let vectors: Vec<Vector> = rows.iter().map(|r| Vector::from(r.1.clone())).collect();
+
+    sqlx::query(
+        "INSERT INTO embeddings (content_hash, model_id, embedding)
+         SELECT h, $2, v FROM UNNEST($1::text[], $3::vector[]) AS t(h, v)
+         ON CONFLICT (content_hash, model_id) DO UPDATE
+           SET embedding = EXCLUDED.embedding",
+    )
+    .bind(&hashes)
+    .bind(model_id)
+    .bind(&vectors)
     .execute(pool)
     .await?;
     Ok(())

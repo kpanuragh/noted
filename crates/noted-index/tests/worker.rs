@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use noted_index::provider::{EmbedError, EmbeddingProvider, EMBEDDING_DIMS};
-use noted_index::worker::{Worker, BATCH_SIZE};
+use noted_index::worker::{BatchOutcome, Worker, WorkerError, BATCH_SIZE};
 
 /// Deterministic fake — no model download, no network. Counts calls so we can
 /// prove work is not repeated.
@@ -29,6 +29,26 @@ impl EmbeddingProvider for Fake {
             v[0] = t.len() as f32; // deterministic and text-dependent
             v
         }).collect())
+    }
+}
+
+/// Fails on one specific text and succeeds on every other — a chunk the model
+/// genuinely cannot handle. The failure is batch-granular, as a real provider's
+/// would be: the whole call errors if the bad text is anywhere in it.
+struct Poison {
+    bad: String,
+    model_id: String,
+}
+
+#[async_trait::async_trait]
+impl EmbeddingProvider for Poison {
+    fn dimensions(&self) -> usize { EMBEDDING_DIMS }
+    fn model_id(&self) -> &str { &self.model_id }
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
+        if texts.iter().any(|t| *t == self.bad) {
+            return Err(EmbedError::Model("this chunk cannot be embedded".into()));
+        }
+        Ok(texts.iter().map(|_| vec![0.25f32; EMBEDDING_DIMS]).collect())
     }
 }
 
@@ -127,7 +147,8 @@ async fn interrupted_work_resumes_without_duplication() {
     // Simulate a crash after one batch by only running once.
     let first = w.run_once().await.unwrap();
     assert_eq!(
-        first as i64, BATCH_SIZE,
+        first,
+        BatchOutcome::Embedded(BATCH_SIZE as usize),
         "the first run_once must embed exactly one full batch, proving work is left behind"
     );
     assert_eq!(
@@ -159,4 +180,83 @@ async fn interrupted_work_resumes_without_duplication() {
 
     let (embedded, all) = noted_db::chunks::progress(&pool, "fake-worker", None).await.unwrap();
     assert_eq!(embedded, all, "progress must reach 100% after resuming");
+}
+
+/// One chunk the provider can never embed must not stop the backfill — and the
+/// drain must still end rather than spin on it forever.
+///
+/// Both halves matter. Propagating the embed error (the old behaviour) aborted the
+/// whole drain, so a single bad chunk blocked every other chunk on every restart,
+/// forever. But merely swallowing the error would spin: the queue is a set
+/// difference with no state, so an unembeddable chunk is handed back on every
+/// single poll.
+///
+/// The poison chunk shares a batch with the healthy ones here (they are seeded
+/// together and BATCH_SIZE is 64), which is the case that actually bites: batch-
+/// granular isolation alone would let one bad chunk take its 63 innocent
+/// neighbours down with it, permanently, because `pending()` is deterministic and
+/// hands back the identical batch every time.
+///
+/// Termination is proven by this test returning at all — a spinning `drain` hangs
+/// until the harness kills it.
+#[tokio::test]
+async fn a_poison_chunk_does_not_block_its_neighbours_and_drain_terminates() {
+    let (pool, page) = setup().await;
+    let marker = uuid::Uuid::new_v4();
+    let bad_text = format!("poison {marker} UNEMBEDDABLE");
+
+    let bad_hash = format!("ph-bad-{}", uuid::Uuid::new_v4());
+    noted_db::chunks::upsert(&pool, &[(bad_hash.clone(), bad_text.clone(), 10)]).await.unwrap();
+    let mut hashes = vec![bad_hash.clone()];
+
+    let mut good_hashes = Vec::new();
+    for i in 0..5 {
+        let hash = format!("ph-good-{}", uuid::Uuid::new_v4());
+        let text = format!("healthy {marker} chunk {i}");
+        noted_db::chunks::upsert(&pool, &[(hash.clone(), text, 10)]).await.unwrap();
+        hashes.push(hash.clone());
+        good_hashes.push(hash);
+    }
+    noted_db::chunks::set_page_chunks(&pool, page, &hashes).await.unwrap();
+
+    // A model_id nothing else uses, so this worker's embeddings are its own.
+    let model = format!("fake-poison-{}", uuid::Uuid::new_v4());
+    let provider = Arc::new(Poison { bad: bad_text, model_id: model.clone() });
+    let w = Worker::new(pool.clone(), provider).unwrap();
+
+    let err = w
+        .drain()
+        .await
+        .expect_err("a chunk that can never be embedded must surface as an error, not a clean exit");
+    assert!(
+        matches!(err, WorkerError::Stalled { .. }),
+        "a stalled drain must say so, got: {err}"
+    );
+
+    // THE assertion: the healthy chunks that shared the poison's batch got embedded
+    // regardless. Batch-granular isolation alone fails right here.
+    for hash in &good_hashes {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM embeddings WHERE content_hash = $1 AND model_id = $2",
+        )
+        .bind(hash)
+        .bind(&model)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            n, 1,
+            "a healthy chunk must be embedded even though it shared a batch with a poison chunk"
+        );
+    }
+
+    let bad: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM embeddings WHERE content_hash = $1 AND model_id = $2",
+    )
+    .bind(&bad_hash)
+    .bind(&model)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(bad, 0, "the poison chunk must not get an embedding it never produced");
 }

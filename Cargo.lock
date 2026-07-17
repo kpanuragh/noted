@@ -1980,6 +1980,7 @@ dependencies = [
  "async-trait",
  "fastembed",
  "noted-db",
+ "noted-index",
  "sha2 0.10.9",
  "sqlx",
  "thiserror 2.0.18",
