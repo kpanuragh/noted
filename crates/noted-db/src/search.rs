@@ -183,3 +183,157 @@ pub async fn related_pages(
     tx.commit().await?;
     Ok(hits)
 }
+
+use pgvector::Vector;
+
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct SearchHit {
+    pub page_id: Uuid,
+    pub title: String,
+    pub snippet: String,
+    pub score: f32,
+}
+
+/// Reciprocal Rank Fusion constant. 60 is the value from the original paper and
+/// is not worth tuning — RRF's appeal is that it needs no calibration.
+const RRF_K: f32 = 60.0;
+
+/// Hybrid search: a lexical arm and a vector arm, fused on RANK.
+///
+/// Neither arm alone is acceptable. Vector search is bad at precision (error
+/// codes, surnames, flags, exact phrases — embeddings blur exactly what the user
+/// is anchoring on). Lexical search is bad at recall (it cannot match "database
+/// performance" to "the planner keeps choosing a seq scan").
+///
+/// Fusion is on rank, not score: `ts_rank_cd` and cosine distance are
+/// incompatible scales, and normalising them against each other is the fragile
+/// step that makes naive hybrid search unreliable. RRF ignores the scores:
+/// `score = Σ 1/(k + rank_i)`, summed over whichever arm(s) found a page.
+///
+/// `q_vec` is supplied by the caller — this crate does no inference, which keeps
+/// the embedding model out of `noted-db`.
+///
+/// # Why the vector arm is shaped like `related_pages`, not like a plain join
+///
+/// The obvious way to write the vector arm is to join `embeddings` straight to
+/// `chunks`/`page_chunks`/`pages`, filter on workspace, and `ORDER BY distance
+/// LIMIT n`. That is wrong: pgvector can only push ANN ordering into
+/// `embeddings_hnsw_idx` for `ORDER BY <vector> <=> <const> LIMIT n` taken
+/// DIRECTLY off the `embeddings` base-relation scan. Any join between that scan
+/// and the sort — needed to resolve a workspace, since `embeddings` carries no
+/// `workspace_id` — destroys the index-provided ordering and turns it into a
+/// filtered full scan over every embedding in the instance. That is the exact
+/// mistake `related_pages` (Task 2) hit and fixed; see its doc comment.
+///
+/// So the ANN lives ALONE in `near`: a plain `WHERE model_id = $4 AND EXISTS
+/// (...)` scan ordered straight into `LIMIT`, with the workspace check pushed
+/// into an `EXISTS` subquery. The `OFFSET 0` inside that `EXISTS` is an
+/// OPTIMIZATION FENCE, not dead code — `simplify_EXISTS_query` declines to pull
+/// up a subquery carrying LIMIT/OFFSET, which is what keeps Postgres from
+/// hoisting the `EXISTS` into a semi-join (a join that would sit between the
+/// scan and the sort and cost us the index, exactly as in `related_pages`).
+///
+/// The filter must live INSIDE `near`, not after: chunks are content-addressed
+/// and shared across tenants, so overfetching globally and filtering by
+/// workspace afterwards could spend the whole candidate budget on other
+/// tenants' rows and return nothing for this workspace.
+///
+/// `vec_pages` then resolves `near`'s content-hash candidates to pages and
+/// collapses each page to its single closest chunk (`DISTINCT ON (p.id)`) —
+/// one chunk can belong to several pages and one page to several chunks, so
+/// without this a multi-chunk page would produce several rows that each
+/// compete for a rank in the fusion.
+pub async fn hybrid(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    q: &str,
+    q_vec: &[f32],
+    model_id: &str,
+    limit: i64,
+) -> Result<Vec<SearchHit>, sqlx::Error> {
+    let q = q.trim();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut tx = pool.begin().await?;
+    // The vector arm filters (via the EXISTS in `near`), so without iterative
+    // scans an HNSW scan under a WHERE clause overfilters and silently returns
+    // short.
+    sqlx::query("SET LOCAL hnsw.iterative_scan = relaxed_order")
+        .execute(&mut *tx)
+        .await?;
+
+    let hits = sqlx::query_as::<_, SearchHit>(
+        "WITH lex AS (
+             SELECT b.page_id, b.text AS snippet,
+                    ROW_NUMBER() OVER (
+                        ORDER BY ts_rank_cd(to_tsvector('english', b.text),
+                                            plainto_tsquery('english', $2)) DESC
+                    ) AS rank
+             FROM blocks b
+             JOIN pages p ON p.id = b.page_id
+             WHERE p.workspace_id = $1
+               AND p.archived_at IS NULL
+               AND to_tsvector('english', b.text) @@ plainto_tsquery('english', $2)
+             LIMIT 50
+         ),
+         near AS (
+             SELECT e.content_hash,
+                    (e.embedding <=> $3) AS distance
+             FROM embeddings e
+             WHERE e.model_id = $4
+               AND EXISTS (
+                   SELECT 1
+                   FROM page_chunks pc
+                   JOIN pages p ON p.id = pc.page_id
+                   WHERE pc.content_hash = e.content_hash
+                     AND p.workspace_id = $1
+                     AND p.archived_at IS NULL
+                   OFFSET 0
+               )
+             ORDER BY e.embedding <=> $3
+             LIMIT 100
+         ),
+         vec_pages AS (
+             SELECT DISTINCT ON (p.id)
+                    p.id AS page_id, c.text AS snippet, n.distance
+             FROM near n
+             JOIN chunks c       ON c.content_hash = n.content_hash
+             JOIN page_chunks pc ON pc.content_hash = n.content_hash
+             JOIN pages p        ON p.id = pc.page_id
+             WHERE p.workspace_id = $1
+               AND p.archived_at IS NULL
+             ORDER BY p.id, n.distance
+         ),
+         vec AS (
+             SELECT page_id, snippet,
+                    ROW_NUMBER() OVER (ORDER BY distance) AS rank
+             FROM vec_pages
+         ),
+         fused AS (
+             SELECT page_id, snippet, rank FROM lex
+             UNION ALL
+             SELECT page_id, snippet, rank FROM vec
+         )
+         SELECT f.page_id, p.title,
+                (array_agg(f.snippet ORDER BY f.rank))[1] AS snippet,
+                SUM((1.0::real) / ($5 + f.rank::real))::real AS score
+         FROM fused f
+         JOIN pages p ON p.id = f.page_id
+         GROUP BY f.page_id, p.title
+         ORDER BY score DESC
+         LIMIT $6",
+    )
+    .bind(workspace_id)
+    .bind(q)
+    .bind(Vector::from(q_vec.to_vec()))
+    .bind(model_id)
+    .bind(RRF_K)
+    .bind(limit)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(hits)
+}
