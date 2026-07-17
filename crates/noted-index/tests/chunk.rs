@@ -1,4 +1,4 @@
-use noted_index::chunk::{chunk_blocks, Chunk, SourceBlock};
+use noted_index::chunk::{chunk_blocks, estimate_tokens, Chunk, SourceBlock, MAX_TOKENS};
 
 fn b(node_type: &str, text: &str) -> SourceBlock {
     SourceBlock { node_type: node_type.into(), text: text.into() }
@@ -70,4 +70,58 @@ fn a_trailing_short_block_is_not_lost() {
     let chunks: Vec<Chunk> = chunk_blocks(&blocks);
     let all: String = chunks.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join(" ");
     assert!(all.contains("short tail"), "a trailing short block must not be dropped");
+}
+
+/// CJK/Kana/Hangul have no whitespace word boundaries, so `split_whitespace`
+/// reads an entire paragraph as one "word". The old implementation returned 2
+/// tokens for this; it is really hundreds.
+#[test]
+fn cjk_text_is_not_undercounted() {
+    let text = "测".repeat(200);
+    assert!(
+        estimate_tokens(&text) >= 150,
+        "expected >= 150 tokens for 200 CJK characters, got {}",
+        estimate_tokens(&text)
+    );
+}
+
+/// A long URL, base64 blob, or minified code is one "word" by whitespace but
+/// many tokens. The old implementation returned 2 tokens for this.
+#[test]
+fn a_long_unbroken_token_is_not_undercounted() {
+    let text = "a".repeat(2000);
+    assert!(
+        estimate_tokens(&text) >= 400,
+        "expected >= 400 tokens for a 2000-char unbroken token, got {}",
+        estimate_tokens(&text)
+    );
+}
+
+/// The fix must not wildly inflate ordinary English prose, which would
+/// fragment chunks pointlessly.
+#[test]
+fn english_prose_estimate_is_still_reasonable() {
+    let text = long_text(100);
+    let estimate = estimate_tokens(&text);
+    assert!(
+        (100..=400).contains(&estimate),
+        "expected 100..=400 tokens for 100 ordinary words, got {}",
+        estimate
+    );
+}
+
+/// End-to-end proof: dense CJK text run through the real split logic must
+/// still respect the token ceiling on every emitted chunk.
+#[test]
+fn cjk_blocks_still_split_under_the_ceiling() {
+    let blocks = vec![b("paragraph", &"測".repeat(3000))];
+    let chunks = chunk_blocks(&blocks);
+    assert!(chunks.len() > 1, "a block over the ceiling must split");
+    for c in &chunks {
+        assert!(
+            c.token_estimate <= MAX_TOKENS,
+            "every chunk must be under the ceiling, got {}",
+            c.token_estimate
+        );
+    }
 }

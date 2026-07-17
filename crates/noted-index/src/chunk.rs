@@ -18,13 +18,37 @@ pub struct Chunk {
     pub token_estimate: i32,
 }
 
-/// Whitespace-delimited word count scaled by a fudge factor. Deliberately not a
-/// real tokenizer: this only picks split points, and being wrong by 20% costs
-/// nothing. A real tokenizer would add a dependency and a model coupling for no
-/// benefit.
+/// True for scripts with no whitespace word boundaries, which tokenize at
+/// roughly one token per character.
+fn is_dense_script(c: char) -> bool {
+    matches!(c as u32,
+        0x3040..=0x30FF |   // Hiragana + Katakana
+        0x3400..=0x4DBF |   // CJK Unified Ideographs Extension A
+        0x4E00..=0x9FFF |   // CJK Unified Ideographs
+        0xAC00..=0xD7AF |   // Hangul Syllables
+        0xF900..=0xFAFF     // CJK Compatibility Ideographs
+    )
+}
+
+/// Rough token count, used only to pick split points — being 30% high costs a
+/// slightly smaller chunk, while being low costs a silently truncated embedding.
+/// So this deliberately OVER-estimates.
+///
+/// Three inputs, because one heuristic does not cover them:
+///  - whitespace-delimited words (English prose): ~1.3 tokens/word
+///  - dense scripts (CJK/Kana/Hangul): ~1 token/char, and `split_whitespace`
+///    would otherwise read a whole paragraph as ONE word
+///  - a character floor: catches a long URL, base64, or minified code, which is
+///    one "word" but many tokens
 pub fn estimate_tokens(text: &str) -> i32 {
-    let words = text.split_whitespace().count() as f32;
-    (words * 1.3).ceil() as i32
+    let dense = text.chars().filter(|c| is_dense_script(*c)).count();
+    let sparse: String = text.chars().filter(|c| !is_dense_script(*c)).collect();
+    let words = sparse.split_whitespace().count();
+
+    let by_words = (words as f32 * 1.3) + dense as f32;
+    let by_chars = text.chars().count() as f32 / 4.0;
+
+    by_words.max(by_chars).ceil() as i32
 }
 
 fn hash(text: &str) -> String {
@@ -40,7 +64,11 @@ fn make(text: String) -> Chunk {
 
 /// Split a too-long text at sentence boundaries, keeping every piece under
 /// MAX_TOKENS. Falls back to a hard word-split for text with no sentence
-/// terminators (e.g. a wall of prose with no full stops).
+/// terminators (e.g. a wall of prose with no full stops), and further falls
+/// back to a hard character-split for text with no word boundaries either
+/// (dense scripts like CJK/Kana/Hangul have neither sentence terminators nor
+/// whitespace, so the word-split alone would emit the whole text as "one
+/// word" and never actually shrink it).
 fn split_long(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
@@ -52,9 +80,20 @@ fn split_long(text: &str) -> Vec<String> {
             }
             // No sentence boundary helps here — split on words.
             let words: Vec<&str> = sentence.split_whitespace().collect();
-            let per = (MAX_TOKENS as f32 / 1.3).floor() as usize;
-            for w in words.chunks(per.max(1)) {
-                out.push(w.join(" "));
+            if words.len() > 1 {
+                let per = (MAX_TOKENS as f32 / 1.3).floor() as usize;
+                for w in words.chunks(per.max(1)) {
+                    out.push(w.join(" "));
+                }
+            } else {
+                // No whitespace boundary either — split on raw characters.
+                // Use a conservative budget since dense scripts cost ~1
+                // token/char (estimate_tokens' worst case).
+                let per_chars = (MAX_TOKENS as f32 * 0.9).floor() as usize;
+                let chars: Vec<char> = sentence.chars().collect();
+                for piece in chars.chunks(per_chars.max(1)) {
+                    out.push(piece.iter().collect());
+                }
             }
             continue;
         }

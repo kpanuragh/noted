@@ -5,8 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-noted-db = { path = "../noted-db" }
 sha2 = "0.10"
+# noted-db, thiserror, tracing, tokio: unused by chunk.rs (the only module so
+# far) but required by the indexing worker landing in Tasks 4-7 — noted-db and
+# tokio for the worker itself, thiserror for its error types, tracing for
+# progress logging. Left in place to avoid remove-then-readd churn.
+noted-db = { path = "../noted-db" }
 thiserror.workspace = true
 tracing.workspace = true
 tokio.workspace = true
