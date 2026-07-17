@@ -55,6 +55,27 @@ impl NotedDoc {
         Ok(d)
     }
 
+    /// Check that `update` decodes, WITHOUT applying it to any document.
+    ///
+    /// Lets a server reject malformed input before writing it to the log, and
+    /// then apply it only once the log write has succeeded. That ordering
+    /// matters for a document shared between sessions: such a document outlives
+    /// any one session, so an update applied to it but missing from the log
+    /// would be advertised in its state vector forever — the client's reconnect
+    /// handshake would conclude the server already had the edit and never
+    /// re-send it, losing it silently.
+    ///
+    /// The update is decoded again by the subsequent `apply_update`. The
+    /// decoded value is deliberately not returned: `yrs::Update` is not `Send`,
+    /// so it could not be held across the caller's `.await` points anyway, and
+    /// decoding a keystroke-sized update twice is far cheaper than the database
+    /// round trip it guards.
+    pub fn validate_update(update: &[u8]) -> Result<(), CrdtError> {
+        Update::decode_v1(update)
+            .map(|_| ())
+            .map_err(|e| CrdtError::Decode(e.to_string()))
+    }
+
     pub fn apply_update(&self, update: &[u8]) -> Result<(), CrdtError> {
         let update = Update::decode_v1(update).map_err(|e| CrdtError::Decode(e.to_string()))?;
         let mut txn = self.doc.transact_mut();

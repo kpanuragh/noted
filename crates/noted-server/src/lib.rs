@@ -6,7 +6,7 @@ pub use state::AppState;
 
 use axum::Router;
 use axum::http::{HeaderValue, Method};
-use axum::routing::get;
+use axum::routing::{get, post};
 use tower_http::cors::CorsLayer;
 
 fn cors_layer() -> CorsLayer {
@@ -35,6 +35,7 @@ pub fn app(state: AppState) -> Router {
             "/api/pages/{id}",
             get(routes::pages::get).patch(routes::pages::rename),
         )
+        .route("/api/pages/{id}/reproject", post(routes::pages::reproject))
         .route("/sync/{page_id}", get(routes::sync::handler))
         .layer(cors_layer())
         .with_state(state)

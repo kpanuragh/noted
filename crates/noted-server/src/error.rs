@@ -12,6 +12,8 @@ pub enum AppError {
     PgvectorTooOld { found: String },
     #[error("unknown workspace_id or parent_id")]
     InvalidReference,
+    #[error("the document log could not be replayed")]
+    CorruptDoc,
 }
 
 impl IntoResponse for AppError {
@@ -21,6 +23,7 @@ impl IntoResponse for AppError {
             AppError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::PgvectorTooOld { .. } => StatusCode::SERVICE_UNAVAILABLE,
             AppError::InvalidReference => StatusCode::BAD_REQUEST,
+            AppError::CorruptDoc => StatusCode::INTERNAL_SERVER_ERROR,
         };
         // Never leak SQL detail to clients; log it instead.
         if let AppError::Db(ref e) = self {

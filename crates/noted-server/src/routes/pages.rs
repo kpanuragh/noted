@@ -1,7 +1,9 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use noted_crdt::NotedDoc;
 use noted_db::pages::{self, Page};
+use noted_db::{blocks, docs};
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -68,4 +70,43 @@ pub async fn rename(
     } else {
         Err(AppError::NotFound)
     }
+}
+
+#[derive(serde::Serialize)]
+pub struct ReprojectResponse {
+    pub blocks: usize,
+}
+
+/// Rebuild a page's `blocks` projection from `doc_updates`, the source of truth.
+///
+/// `blocks` is a derived projection, and the session writes it on a debounce
+/// with failures logged and ignored — so a crash or a failed write can leave it
+/// stale with nothing to repair it, while M1b/M1c index off it. This endpoint is
+/// that repair path, and the exercise proving the projection really is
+/// reconstructible from the log alone.
+///
+/// Deliberately rebuilt from the log rather than from any live in-memory hub:
+/// reading the log is what actually tests the invariant. If a session is editing
+/// the page concurrently its own next projection simply overwrites this one with
+/// newer state, which is the correct outcome either way.
+pub async fn reproject(
+    State(st): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ReprojectResponse>, AppError> {
+    if pages::get(&st.pool, id).await?.is_none() {
+        return Err(AppError::NotFound);
+    }
+
+    let updates = docs::load(&st.pool, id).await?;
+    let doc = NotedDoc::from_updates(&updates).map_err(|e| {
+        tracing::error!(error = %e, page_id = %id, "cannot reproject: corrupt doc log");
+        AppError::CorruptDoc
+    })?;
+
+    let projected = doc.project();
+    blocks::replace_for_page(&st.pool, id, &projected).await?;
+
+    Ok(Json(ReprojectResponse {
+        blocks: projected.len(),
+    }))
 }
