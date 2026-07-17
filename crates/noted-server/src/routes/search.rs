@@ -46,10 +46,18 @@ pub struct SearchQuery {
 /// `noted_db::search::hybrid`. An embedding failure is logged with detail and
 /// surfaced to the client as a bare `500` (`AppError::Embed`) — never the
 /// underlying ONNX/model error text.
+///
+/// A blank (or whitespace-only) query short-circuits before the embed call —
+/// `hybrid` would trim and return empty anyway, but not before paying for a
+/// multi-second model call. `quick_find` already short-circuits the same way.
 pub async fn search(
     State(st): State<AppState>,
     Query(q): Query<SearchQuery>,
 ) -> Result<Json<Vec<SearchHit>>, AppError> {
+    if q.q.trim().is_empty() {
+        return Ok(Json(Vec::new()));
+    }
+
     let mut vectors = st.embedder.embed(&[q.q.clone()]).await.map_err(|e| {
         tracing::error!(error = %e, "failed to embed search query");
         AppError::Embed

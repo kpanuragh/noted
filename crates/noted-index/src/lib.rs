@@ -4,8 +4,11 @@ pub mod chunk;
 pub mod materialize;
 
 // Embedding drags in fastembed -> ONNX runtime + a HuggingFace model downloader.
-// Only the `noted-index` binary embeds anything, so this is default-off: the web
-// server has no business linking an inference runtime it never calls.
+// `noted-server` DOES use this now — it embeds search queries for hybrid search
+// (see noted-server's routes/search.rs) — but not every consumer of this crate
+// wants that weight (e.g. a future CLI that only chunks/materializes). Keeping
+// the feature default-off lets those non-search consumers stay slim while the
+// server opts in explicitly.
 #[cfg(feature = "embed")]
 pub mod provider;
 #[cfg(feature = "embed")]
