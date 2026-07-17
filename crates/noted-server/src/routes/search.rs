@@ -6,13 +6,6 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::state::AppState;
 
-/// The model_id stamped on every stored embedding (`FastEmbed::model_id()`).
-/// Hardcoded here rather than read off `st.embedder.model_id()` because a test
-/// run's stub embedder reports `"stub"` — matching search results against
-/// vectors that were actually stored under `"bge-base-en-v1.5"` requires this
-/// constant, not whatever provider happens to be wired into `AppState`.
-const MODEL_ID: &str = "bge-base-en-v1.5";
-
 /// Arbitrary, generous result cap. None of the three endpoints take a
 /// caller-supplied limit yet — that's a future knob, not a correctness
 /// requirement of this task.
@@ -63,9 +56,15 @@ pub async fn search(
     })?;
     let q_vec = vectors.pop().ok_or(AppError::Embed)?;
 
-    let hits =
-        noted_db::search::hybrid(&st.pool, q.workspace_id, &q.q, &q_vec, MODEL_ID, DEFAULT_LIMIT)
-            .await?;
+    let hits = noted_db::search::hybrid(
+        &st.pool,
+        q.workspace_id,
+        &q.q,
+        &q_vec,
+        st.embedder.model_id(),
+        DEFAULT_LIMIT,
+    )
+    .await?;
     Ok(Json(hits))
 }
 
@@ -85,6 +84,8 @@ pub async fn related(
         return Err(AppError::NotFound);
     }
 
-    let hits = noted_db::search::related_pages(&st.pool, id, MODEL_ID, DEFAULT_LIMIT).await?;
+    let hits =
+        noted_db::search::related_pages(&st.pool, id, st.embedder.model_id(), DEFAULT_LIMIT)
+            .await?;
     Ok(Json(hits))
 }

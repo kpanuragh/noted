@@ -74,6 +74,40 @@ async fn search_requires_a_workspace_id() {
 }
 
 #[tokio::test]
+async fn search_with_a_malformed_workspace_id_is_a_400() {
+    let (app, _) = app_and_ws().await;
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/search?workspace_id=not-a-uuid&q=x")
+                .body(Body::empty()).unwrap(),
+        )
+        .await.unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::BAD_REQUEST,
+        "a malformed workspace_id must 400, not 500"
+    );
+}
+
+#[tokio::test]
+async fn quickfind_with_a_malformed_workspace_id_is_a_400() {
+    let (app, _) = app_and_ws().await;
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/quickfind?workspace_id=not-a-uuid&q=x")
+                .body(Body::empty()).unwrap(),
+        )
+        .await.unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::BAD_REQUEST,
+        "a malformed workspace_id must 400, not 500"
+    );
+}
+
+#[tokio::test]
 async fn related_for_an_unknown_page_returns_404() {
     let (app, _) = app_and_ws().await;
     let res = app
