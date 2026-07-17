@@ -36,6 +36,27 @@ fn content_hash_changes_when_text_changes() {
 }
 
 #[test]
+fn content_hash_differs_for_same_text_different_node_type() {
+    let a = NotedDoc::new();
+    a.append_node_for_test("paragraph", "same words");
+    let b = NotedDoc::new();
+    b.append_node_for_test("heading", "same words");
+
+    let a_block = &a.project()[0];
+    let b_block = &b.project()[0];
+    assert_eq!(a_block.text, b_block.text);
+    assert_ne!(
+        a_block.node_type, b_block.node_type,
+        "test setup sanity check: node types must differ"
+    );
+    assert_ne!(
+        a_block.content_hash, b_block.content_hash,
+        "changing node_type (e.g. paragraph -> heading) with identical text must change the content hash, \
+         otherwise M1b's skip-unchanged-blocks optimisation would miss real structural changes"
+    );
+}
+
+#[test]
 fn empty_document_projects_to_no_blocks() {
     assert!(NotedDoc::new().project().is_empty());
 }

@@ -16,16 +16,21 @@ pub async fn replace_for_page(
         .execute(&mut *tx)
         .await?;
 
-    for b in blocks {
+    if !blocks.is_empty() {
+        let indices: Vec<i32> = blocks.iter().map(|b| b.index).collect();
+        let node_types: Vec<String> = blocks.iter().map(|b| b.node_type.clone()).collect();
+        let texts: Vec<String> = blocks.iter().map(|b| b.text.clone()).collect();
+        let hashes: Vec<String> = blocks.iter().map(|b| b.content_hash.clone()).collect();
+
         sqlx::query(
             "INSERT INTO blocks (page_id, block_index, node_type, text, content_hash)
-             VALUES ($1, $2, $3, $4, $5)",
+             SELECT $1, * FROM UNNEST($2::int[], $3::text[], $4::text[], $5::text[])",
         )
         .bind(page_id)
-        .bind(b.index)
-        .bind(&b.node_type)
-        .bind(&b.text)
-        .bind(&b.content_hash)
+        .bind(&indices)
+        .bind(&node_types)
+        .bind(&texts)
+        .bind(&hashes)
         .execute(&mut *tx)
         .await?;
     }

@@ -80,13 +80,21 @@ impl NotedDoc {
     /// Append a `<paragraph>` containing `text`, returning the update bytes it
     /// produced. Test-only: the real client drives edits through y-prosemirror.
     pub fn append_paragraph_for_test(&self, text: &str) -> Vec<u8> {
+        self.append_node_for_test("paragraph", text)
+    }
+
+    /// Append an XML element with the given tag name containing `text`,
+    /// returning the update bytes it produced. Test-only: lets tests exercise
+    /// node types other than `paragraph` (e.g. `heading`) without pulling in
+    /// y-prosemirror.
+    pub fn append_node_for_test(&self, tag: &str, text: &str) -> Vec<u8> {
         let frag = self.fragment();
         let before = self.doc.transact().state_vector();
         {
             let mut txn = self.doc.transact_mut();
             let len = frag.len(&txn);
-            let para = frag.insert(&mut txn, len, XmlElementPrelim::empty("paragraph"));
-            para.insert(&mut txn, 0, XmlTextPrelim::new(text));
+            let node = frag.insert(&mut txn, len, XmlElementPrelim::empty(tag));
+            node.insert(&mut txn, 0, XmlTextPrelim::new(text));
         }
         self.doc.transact().encode_diff_v1(&before)
     }
@@ -120,6 +128,11 @@ const MAX_DEPTH: usize = 64;
 pub(crate) fn plain_text<T: ReadTxn>(node: &yrs::types::xml::XmlOut, txn: &T, depth: usize) -> String {
     use yrs::types::xml::XmlOut;
     if depth >= MAX_DEPTH {
+        tracing::debug!(
+            depth,
+            MAX_DEPTH,
+            "plain_text: max XML nesting depth reached; dropping remaining descendants"
+        );
         return String::new();
     }
     match node {
