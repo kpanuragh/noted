@@ -40,10 +40,13 @@ async fn compact_replaces_log_with_single_snapshot() {
 }
 
 #[tokio::test]
-async fn compact_is_atomic_under_concurrent_append() {
-    // A compaction must never drop an update that arrives during it. We prove
-    // the weaker but load-bearing property: after compaction the log is never
-    // empty and always replays to something.
+async fn post_compaction_appends_sort_after_snapshot() {
+    // This is an ORDERING test, not a concurrency test: every call below is
+    // sequentially awaited (append -> compact -> append -> load), so it
+    // exercises no concurrency at all. It only proves that an append issued
+    // after compact() has returned sorts after the snapshot row. The actual
+    // concurrency safety of compact() racing a live append is covered by
+    // concurrent_appends_and_compact_keep_log_consistent below.
     let (pool, page) = setup().await;
     docs::append(&pool, page, b"before").await.unwrap();
     docs::compact(&pool, page, b"snap").await.unwrap();
@@ -52,6 +55,63 @@ async fn compact_is_atomic_under_concurrent_append() {
     let loaded = docs::load(&pool, page).await.unwrap();
     assert_eq!(loaded, vec![b"snap".to_vec(), b"after".to_vec()],
         "post-compaction appends must sort after the snapshot");
+}
+
+/// This test actually races append() against compact() using real concurrent
+/// tasks on a multi-threaded runtime (unlike
+/// post_compaction_appends_sort_after_snapshot, which is purely sequential).
+///
+/// What it proves: the log stays internally consistent under a genuine race
+/// - it's never left empty, the snapshot survives, and doc_updates.seq stays
+/// contiguous from 0 with no gaps or duplicates (a lost or double-claimed seq
+/// would show up here).
+///
+/// What it does NOT prove: because this layer stores opaque bytes, it cannot
+/// verify that a racing append's *content* was semantically folded into the
+/// snapshot. That is the caller's concern (Task 8 builds the snapshot from
+/// the in-memory doc, not from raw bytes chosen by this test).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_appends_and_compact_keep_log_consistent() {
+    let (pool, page) = setup().await;
+    for i in 0..10 {
+        docs::append(&pool, page, format!("seed{i}").as_bytes()).await.unwrap();
+    }
+
+    // Race 20 appends against a compaction.
+    let mut handles = Vec::new();
+    for i in 0..20 {
+        let p = pool.clone();
+        handles.push(tokio::spawn(async move {
+            docs::append(&p, page, format!("racer{i}").as_bytes()).await
+        }));
+    }
+    let p = pool.clone();
+    let compaction = tokio::spawn(async move { docs::compact(&p, page, b"snap").await });
+
+    for h in handles {
+        h.await.expect("append task panicked").expect("append failed");
+    }
+    compaction.await.expect("compact task panicked").expect("compact failed");
+
+    // Invariants that must hold regardless of interleaving:
+    let loaded = docs::load(&pool, page).await.unwrap();
+    assert!(!loaded.is_empty(), "log must never be empty after compaction");
+    assert!(
+        loaded.contains(&b"snap".to_vec()),
+        "the snapshot must survive the race"
+    );
+
+    // seq must be contiguous from 0 with no gaps or duplicates - a lost or
+    // double-claimed seq would show up here.
+    let seqs: Vec<i64> = sqlx::query_scalar(
+        "SELECT seq FROM doc_updates WHERE page_id = $1 ORDER BY seq",
+    )
+    .bind(page)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let expected: Vec<i64> = (0..seqs.len() as i64).collect();
+    assert_eq!(seqs, expected, "doc_updates seq must be contiguous from 0");
 }
 
 #[tokio::test]
