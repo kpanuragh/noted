@@ -53,10 +53,12 @@ pub async fn compact(pool: &PgPool, page_id: Uuid, snapshot: &[u8]) -> Result<()
     // Guarantee the doc_seq row exists so the FOR UPDATE below ALWAYS takes a
     // lock. Without this, compacting a page with no prior appends would find no
     // row, take no lock, and race a concurrent first append into oblivion.
-    sqlx::query("INSERT INTO doc_seq (page_id, next) VALUES ($1, 0) ON CONFLICT (page_id) DO NOTHING")
-        .bind(page_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "INSERT INTO doc_seq (page_id, next) VALUES ($1, 0) ON CONFLICT (page_id) DO NOTHING",
+    )
+    .bind(page_id)
+    .execute(&mut *tx)
+    .await?;
 
     // Lock-only: the value is unused. This serialises against append()'s
     // upsert, which takes a conflicting row lock on the same doc_seq row.

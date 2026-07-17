@@ -1,8 +1,8 @@
 use futures_util::SinkExt;
 use noted_crdt::NotedDoc;
 use noted_db::docs;
-use noted_server::routes::sync::{encode_msg, parse_msg, SyncMsg};
 use noted_server::AppState;
+use noted_server::routes::sync::{SyncMsg, encode_msg, parse_msg};
 
 #[test]
 fn parses_sync_step1() {
@@ -24,8 +24,14 @@ fn parses_update() {
 
 #[test]
 fn rejects_unknown_message_type() {
-    assert!(parse_msg(&[0, 99, 1]).is_none(), "unknown subtype must not panic");
-    assert!(parse_msg(&[7, 0, 1]).is_none(), "non-sync message must not panic");
+    assert!(
+        parse_msg(&[0, 99, 1]).is_none(),
+        "unknown subtype must not panic"
+    );
+    assert!(
+        parse_msg(&[7, 0, 1]).is_none(),
+        "non-sync message must not panic"
+    );
     assert!(parse_msg(&[0]).is_none(), "truncated frame must not panic");
     assert!(parse_msg(&[]).is_none(), "empty frame must not panic");
 }
@@ -59,19 +65,17 @@ async fn setup() -> (noted_db::PgPool, uuid::Uuid) {
         .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
     let pool = noted_db::connect(&url).await.unwrap();
     noted_db::migrate(&pool).await.unwrap();
-    let ws: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO workspaces (name) VALUES ('sync-ws-test') RETURNING id",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    let page: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO pages (workspace_id, title) VALUES ($1, 'p') RETURNING id",
-    )
-    .bind(ws)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let ws: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO workspaces (name) VALUES ('sync-ws-test') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let page: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO pages (workspace_id, title) VALUES ($1, 'p') RETURNING id")
+            .bind(ws)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     (pool, page)
 }
 
@@ -105,7 +109,9 @@ async fn websocket_session_persists_an_update() {
 
     let frame = encode_msg(&SyncMsg::Update(update));
     ws_stream
-        .send(tokio_tungstenite::tungstenite::Message::Binary(frame.into()))
+        .send(tokio_tungstenite::tungstenite::Message::Binary(
+            frame.into(),
+        ))
         .await
         .expect("failed to send update frame");
 

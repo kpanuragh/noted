@@ -1,5 +1,5 @@
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 
 use crate::error::AppError;
 use crate::state::AppState;
@@ -30,9 +30,9 @@ pub async fn health(State(st): State<AppState>) -> Result<Json<serde_json::Value
 
     // Fail closed: an unparseable version does not meet the floor.
     match parse_version(&version) {
-        Some(v) if v >= MIN_PGVECTOR => {
-            Ok(Json(serde_json::json!({ "status": "ok", "pgvector": version })))
-        }
+        Some(v) if v >= MIN_PGVECTOR => Ok(Json(
+            serde_json::json!({ "status": "ok", "pgvector": version }),
+        )),
         _ => Err(AppError::PgvectorTooOld { found: version }),
     }
 }
@@ -48,8 +48,14 @@ mod tests {
         assert!(meets("0.8.5"), "0.8.5 should meet the floor");
         assert!(!meets("0.7.4"), "0.7.4 should not meet the floor");
         assert!(meets("0.9.0"), "0.9.0 should meet the floor");
-        assert!(meets("0.10.0"), "0.10.0 should meet the floor (numeric, not lexicographic)");
+        assert!(
+            meets("0.10.0"),
+            "0.10.0 should meet the floor (numeric, not lexicographic)"
+        );
         assert!(meets("1.0.0"), "1.0.0 should meet the floor");
-        assert!(!meets("garbage"), "garbage should fail closed and not meet the floor");
+        assert!(
+            !meets("garbage"),
+            "garbage should fail closed and not meet the floor"
+        );
     }
 }

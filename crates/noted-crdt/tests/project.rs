@@ -74,7 +74,10 @@ fn projected_text_is_plain_not_xml_markup() {
     doc.append_paragraph_for_test("alpha");
 
     let blocks = doc.project();
-    assert_eq!(blocks[0].text, "alpha", "projected text must be exactly the plain text");
+    assert_eq!(
+        blocks[0].text, "alpha",
+        "projected text must be exactly the plain text"
+    );
     assert!(
         !blocks[0].text.contains('<') && !blocks[0].text.contains('>'),
         "projected text must not contain XML tag markup, got: {:?}",

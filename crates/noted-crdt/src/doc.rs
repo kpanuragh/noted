@@ -68,8 +68,8 @@ impl NotedDoc {
     }
 
     pub fn diff(&self, state_vector: &[u8]) -> Result<Vec<u8>, CrdtError> {
-        let sv = StateVector::decode_v1(state_vector)
-            .map_err(|e| CrdtError::Decode(e.to_string()))?;
+        let sv =
+            StateVector::decode_v1(state_vector).map_err(|e| CrdtError::Decode(e.to_string()))?;
         Ok(self.doc.transact().encode_diff_v1(&sv))
     }
 
@@ -125,7 +125,11 @@ const MAX_DEPTH: usize = 64;
 /// serialization (with tags), which is not what callers want.
 ///
 /// `pub(crate)` so `project.rs` reuses this rather than duplicating the walk.
-pub(crate) fn plain_text<T: ReadTxn>(node: &yrs::types::xml::XmlOut, txn: &T, depth: usize) -> String {
+pub(crate) fn plain_text<T: ReadTxn>(
+    node: &yrs::types::xml::XmlOut,
+    txn: &T,
+    depth: usize,
+) -> String {
     use yrs::types::xml::XmlOut;
     if depth >= MAX_DEPTH {
         tracing::debug!(

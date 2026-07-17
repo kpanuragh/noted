@@ -5,9 +5,11 @@ async fn setup() -> (noted_db::PgPool, uuid::Uuid) {
         .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
     let pool = noted_db::connect(&url).await.unwrap();
     noted_db::migrate(&pool).await.unwrap();
-    let ws: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO workspaces (name) VALUES ('test') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let ws: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO workspaces (name) VALUES ('test') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     (pool, ws)
 }
 
@@ -25,11 +27,19 @@ async fn create_then_get_roundtrips() {
 async fn children_returns_only_direct_children() {
     let (pool, ws) = setup().await;
     let root = pages::create(&pool, ws, None, "Root").await.unwrap();
-    let child = pages::create(&pool, ws, Some(root.id), "Child").await.unwrap();
-    let _grandchild = pages::create(&pool, ws, Some(child.id), "Grandchild").await.unwrap();
+    let child = pages::create(&pool, ws, Some(root.id), "Child")
+        .await
+        .unwrap();
+    let _grandchild = pages::create(&pool, ws, Some(child.id), "Grandchild")
+        .await
+        .unwrap();
 
     let kids = pages::children(&pool, ws, Some(root.id)).await.unwrap();
-    assert_eq!(kids.len(), 1, "children() must not recurse into grandchildren");
+    assert_eq!(
+        kids.len(),
+        1,
+        "children() must not recurse into grandchildren"
+    );
     assert_eq!(kids[0].id, child.id);
 }
 
@@ -60,6 +70,11 @@ async fn rename_updates_title_and_bumps_updated_at() {
 #[tokio::test]
 async fn rename_unknown_page_returns_false() {
     let (pool, _ws) = setup().await;
-    let renamed = pages::rename(&pool, uuid::Uuid::new_v4(), "Nope").await.unwrap();
-    assert!(!renamed, "rename() must return false when no page matches the id");
+    let renamed = pages::rename(&pool, uuid::Uuid::new_v4(), "Nope")
+        .await
+        .unwrap();
+    assert!(
+        !renamed,
+        "rename() must return false when no page matches the id"
+    );
 }

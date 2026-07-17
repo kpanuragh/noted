@@ -4,9 +4,9 @@ pub mod state;
 
 pub use state::AppState;
 
+use axum::Router;
 use axum::http::{HeaderValue, Method};
 use axum::routing::get;
-use axum::Router;
 use tower_http::cors::CorsLayer;
 
 fn cors_layer() -> CorsLayer {

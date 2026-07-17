@@ -43,7 +43,11 @@ fn concurrent_edits_converge() {
     a.apply_update(&ub).unwrap();
     b.apply_update(&ua).unwrap();
 
-    assert_eq!(a.text_for_test(), b.text_for_test(), "CRDT replicas must converge");
+    assert_eq!(
+        a.text_for_test(),
+        b.text_for_test(),
+        "CRDT replicas must converge"
+    );
     let merged = a.text_for_test();
     assert!(
         merged.contains("from-a"),
@@ -59,5 +63,8 @@ fn concurrent_edits_converge() {
 fn garbage_update_is_an_error_not_a_panic() {
     let doc = NotedDoc::new();
     let err = doc.apply_update(&[0xff, 0xff, 0xff, 0xff]);
-    assert!(err.is_err(), "malformed updates from the network must not panic the server");
+    assert!(
+        err.is_err(),
+        "malformed updates from the network must not panic the server"
+    );
 }

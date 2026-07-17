@@ -1,4 +1,4 @@
-use noted_server::{app, AppState};
+use noted_server::{AppState, app};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

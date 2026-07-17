@@ -1,14 +1,18 @@
-use sqlx::{postgres::PgPoolOptions, Row};
+use sqlx::{Row, postgres::PgPoolOptions};
 
 #[tokio::test]
 async fn pgvector_extension_is_at_least_0_8() {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
-    let pool = PgPoolOptions::new().connect(&url).await
+    let pool = PgPoolOptions::new()
+        .connect(&url)
+        .await
         .expect("cannot connect to Postgres — is `docker compose up -d` running?");
 
     let row = sqlx::query("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
-        .fetch_optional(&pool).await.unwrap()
+        .fetch_optional(&pool)
+        .await
+        .unwrap()
         .expect("vector extension not installed");
 
     let version: String = row.get("extversion");

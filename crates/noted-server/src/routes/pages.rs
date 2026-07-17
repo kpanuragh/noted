@@ -1,6 +1,6 @@
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::Json;
 use noted_db::pages::{self, Page};
 use uuid::Uuid;
 
@@ -30,11 +30,11 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(page)))
 }
 
-pub async fn get(
-    State(st): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<Page>, AppError> {
-    pages::get(&st.pool, id).await?.map(Json).ok_or(AppError::NotFound)
+pub async fn get(State(st): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<Page>, AppError> {
+    pages::get(&st.pool, id)
+        .await?
+        .map(Json)
+        .ok_or(AppError::NotFound)
 }
 
 #[derive(serde::Deserialize)]
@@ -47,7 +47,9 @@ pub async fn list(
     State(st): State<AppState>,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Vec<Page>>, AppError> {
-    Ok(Json(pages::children(&st.pool, q.workspace_id, q.parent_id).await?))
+    Ok(Json(
+        pages::children(&st.pool, q.workspace_id, q.parent_id).await?,
+    ))
 }
 
 #[derive(serde::Deserialize)]

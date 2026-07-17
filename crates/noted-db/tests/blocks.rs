@@ -6,12 +6,17 @@ async fn setup() -> (noted_db::PgPool, uuid::Uuid) {
         .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
     let pool = noted_db::connect(&url).await.unwrap();
     noted_db::migrate(&pool).await.unwrap();
-    let ws: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO workspaces (name) VALUES ('blocks-test') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let page: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO pages (workspace_id, title) VALUES ($1, 'p') RETURNING id")
-        .bind(ws).fetch_one(&pool).await.unwrap();
+    let ws: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO workspaces (name) VALUES ('blocks-test') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let page: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO pages (workspace_id, title) VALUES ($1, 'p') RETURNING id")
+            .bind(ws)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     (pool, page)
 }
 
@@ -41,9 +46,16 @@ async fn replace_is_idempotent() {
 async fn replace_removes_deleted_blocks() {
     let (pool, page) = setup().await;
     blocks::replace_for_page(&pool, page, &[block(0, "one"), block(1, "two")])
-        .await.unwrap();
-    blocks::replace_for_page(&pool, page, &[block(0, "one")]).await.unwrap();
+        .await
+        .unwrap();
+    blocks::replace_for_page(&pool, page, &[block(0, "one")])
+        .await
+        .unwrap();
 
     let got = blocks::for_page(&pool, page).await.unwrap();
-    assert_eq!(got.len(), 1, "blocks removed from the doc must leave the table");
+    assert_eq!(
+        got.len(),
+        1,
+        "blocks removed from the doc must leave the table"
+    );
 }

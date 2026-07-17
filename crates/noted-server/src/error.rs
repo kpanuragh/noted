@@ -1,6 +1,6 @@
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -38,7 +38,10 @@ impl IntoResponse for AppError {
             )
                 .into_response();
         }
-        (status, Json(serde_json::json!({ "error": status.canonical_reason() })))
+        (
+            status,
+            Json(serde_json::json!({ "error": status.canonical_reason() })),
+        )
             .into_response()
     }
 }

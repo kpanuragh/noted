@@ -1,7 +1,7 @@
 use sha2::{Digest, Sha256};
 use yrs::{Transact, XmlFragment};
 
-use crate::doc::{plain_text, NotedDoc};
+use crate::doc::{NotedDoc, plain_text};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedBlock {

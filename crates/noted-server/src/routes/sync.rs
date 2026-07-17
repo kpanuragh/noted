@@ -77,7 +77,9 @@ async fn session(socket: WebSocket, page_id: Uuid, st: AppState) {
 
     // Server-initiated Step1 so the client sends us anything we lack.
     if tx
-        .send(Message::Binary(encode_msg(&SyncMsg::Step1(doc.state_vector())).into()))
+        .send(Message::Binary(
+            encode_msg(&SyncMsg::Step1(doc.state_vector())).into(),
+        ))
         .await
         .is_err()
     {
@@ -87,7 +89,9 @@ async fn session(socket: WebSocket, page_id: Uuid, st: AppState) {
     let mut compaction_disabled = false;
 
     while let Some(Ok(frame)) = rx.next().await {
-        let Message::Binary(bytes) = frame else { continue };
+        let Message::Binary(bytes) = frame else {
+            continue;
+        };
         let Some(msg) = parse_msg(&bytes) else {
             tracing::debug!(%page_id, "ignoring malformed sync frame");
             continue;
