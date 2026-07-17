@@ -65,7 +65,7 @@ impl Worker {
             .await?;
         }
 
-        let (done, total) = noted_db::chunks::progress(&self.pool, &model_id).await?;
+        let (done, total) = noted_db::chunks::progress(&self.pool, &model_id, None).await?;
         tracing::info!(embedded = done, total, "indexing progress");
 
         Ok(batch.len())

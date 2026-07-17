@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use noted_index::provider::{EmbedError, EmbeddingProvider, EMBEDDING_DIMS};
-use noted_index::worker::Worker;
+use noted_index::worker::{Worker, BATCH_SIZE};
 
 /// Deterministic fake — no model download, no network. Counts calls so we can
 /// prove work is not repeated.
@@ -102,34 +102,61 @@ async fn after_drain_every_live_chunk_is_embedded() {
     .fetch_one(&pool).await.unwrap();
     assert_eq!(remaining, 0, "no live chunk may remain unembedded after drain");
 
-    let (embedded, total) = noted_db::chunks::progress(&pool, "fake-worker").await.unwrap();
+    let (embedded, total) = noted_db::chunks::progress(&pool, "fake-worker", None).await.unwrap();
     assert_eq!(embedded, total, "progress must read 100% after a full drain");
     assert!(total >= 4, "progress must count the seeded chunks, got {total}");
 }
 
 /// Crash-safety: the queue has no "in progress" state, so a worker that dies
 /// mid-drain leaves work for the next one and duplicates nothing.
+///
+/// This seeds MORE than `BATCH_SIZE` chunks so a single `run_once()` genuinely
+/// cannot finish the job — there really is a second batch left over for a
+/// "resumed" worker to pick up. A seed of `BATCH_SIZE` or fewer (as an earlier
+/// version of this test did) lets the first `run_once()` embed everything in
+/// one batch, leaving nothing to resume — at that point the test is just
+/// `drain_embeds_everything_then_stops` under a different name.
 #[tokio::test]
 async fn interrupted_work_resumes_without_duplication() {
     let (pool, page) = setup().await;
-    seed(&pool, page, 6).await;
+    let total_seeded = BATCH_SIZE + 20;
+    seed(&pool, page, total_seeded as i32).await;
     let fake = Arc::new(Fake::new(EMBEDDING_DIMS));
     let w = Worker::new(pool.clone(), fake.clone()).unwrap();
 
     // Simulate a crash after one batch by only running once.
     let first = w.run_once().await.unwrap();
-    assert!(first > 0, "the first batch must do some work");
-    let embedded_after_first = fake.texts_embedded();
+    assert_eq!(
+        first as i64, BATCH_SIZE,
+        "the first run_once must embed exactly one full batch, proving work is left behind"
+    );
+    assert_eq!(
+        fake.texts_embedded() as i64,
+        BATCH_SIZE,
+        "exactly one batch's worth of texts must have reached the provider"
+    );
 
-    // A "new worker" (same queue) finishes the job.
+    // A "new worker" (same queue, same underlying provider/counter — standing
+    // in for a fresh process that shares nothing but the database) finishes
+    // the job.
     let w2 = Worker::new(pool.clone(), fake.clone()).unwrap();
     w2.drain().await.unwrap();
 
-    let total = fake.texts_embedded();
-    let (embedded, all) = noted_db::chunks::progress(&pool, "fake-worker").await.unwrap();
-    assert_eq!(embedded, all, "progress must reach 100% after resuming");
-    assert!(
-        total >= embedded_after_first,
-        "resuming must not lose work already done"
+    // THE assertion: total texts ever sent to the provider must equal exactly
+    // the number of chunks seeded, no more. `pending()` is a set difference
+    // against `embeddings`, so if the resumed drain had re-embedded the first
+    // batch (e.g. because `pending()` failed to exclude already-embedded rows,
+    // or a worker re-read stale state), the provider's running counter would
+    // exceed `total_seeded` and this `==` would fail. A `>=` here (as an
+    // earlier version of this test used) would pass even if every chunk were
+    // embedded twice — it only proves "at least everything got done", not
+    // "nothing was redone". `==` is what actually proves no duplication.
+    assert_eq!(
+        fake.texts_embedded() as i64,
+        total_seeded,
+        "resuming must embed each chunk exactly once, never re-embedding the first batch"
     );
+
+    let (embedded, all) = noted_db::chunks::progress(&pool, "fake-worker", None).await.unwrap();
+    assert_eq!(embedded, all, "progress must reach 100% after resuming");
 }

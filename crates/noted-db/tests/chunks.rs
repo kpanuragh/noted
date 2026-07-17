@@ -129,6 +129,36 @@ async fn two_models_embeddings_coexist_for_one_chunk() {
     );
 }
 
+/// `progress()` must be scopable per workspace so a user-facing "N% indexed"
+/// figure never leaks another tenant's backfill volume. This also sidesteps
+/// the cross-test-binary flake the unscoped `None` path has (other test
+/// binaries' chunks share the global `page_chunks` table).
+#[tokio::test]
+async fn progress_can_be_scoped_to_one_workspace() {
+    let (pool, page_a) = setup().await;
+    let (_, page_b) = setup().await;
+    let model = format!("scope-model-{}", uuid::Uuid::new_v4());
+
+    let h_a = format!("scope-a-{}", uuid::Uuid::new_v4());
+    live_chunk(&pool, page_a, &h_a, "workspace a text").await;
+    let h_b = format!("scope-b-{}", uuid::Uuid::new_v4());
+    live_chunk(&pool, page_b, &h_b, "workspace b text").await;
+
+    let ws_a: uuid::Uuid = sqlx::query_scalar(
+        "SELECT workspace_id FROM pages WHERE id = $1")
+        .bind(page_a).fetch_one(&pool).await.unwrap();
+
+    let (_, total_a) = chunks::progress(&pool, &model, Some(ws_a)).await.unwrap();
+    assert_eq!(total_a, 1, "workspace-scoped progress must count only that workspace's chunks");
+
+    let (_, total_global) = chunks::progress(&pool, &model, None).await.unwrap();
+    assert!(
+        total_global > total_a,
+        "the unscoped total ({total_global}) must exceed the scoped total ({total_a}) — \
+         it also counts workspace b's chunk"
+    );
+}
+
 #[tokio::test]
 async fn upsert_is_idempotent() {
     let (pool, _) = setup().await;

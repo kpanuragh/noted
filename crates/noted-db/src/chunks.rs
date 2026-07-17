@@ -117,22 +117,36 @@ pub async fn store_embedding(
     Ok(())
 }
 
-/// (embedded, total) over LIVE chunks under `model_id`. A real fraction, not an
-/// estimate — computable at any moment because the queue is a query.
+/// (embedded, total) over LIVE chunks under `model_id`.
+///
+/// `workspace_id: None` counts the whole instance — correct for the indexing CLI,
+/// which drains everything. `Some(id)` scopes to one workspace: required for any
+/// user-facing "N% indexed" figure, because a global number would expose one
+/// tenant's backfill volume to another.
 ///
 /// Counts through `page_chunks` so orphaned chunks (text that was edited away
 /// but whose row we keep) never drag the denominator down. Reaching 100% must
 /// mean "everything a user can actually see is indexed".
-pub async fn progress(pool: &PgPool, model_id: &str) -> Result<(i64, i64), sqlx::Error> {
+pub async fn progress(
+    pool: &PgPool,
+    model_id: &str,
+    workspace_id: Option<uuid::Uuid>,
+) -> Result<(i64, i64), sqlx::Error> {
     let row: (i64, i64) = sqlx::query_as(
         "SELECT
            count(*) FILTER (WHERE e.content_hash IS NOT NULL) AS embedded,
            count(*)                                            AS total
-         FROM (SELECT DISTINCT content_hash FROM page_chunks) pc
+         FROM (
+             SELECT DISTINCT pc.content_hash
+             FROM page_chunks pc
+             JOIN pages p ON p.id = pc.page_id
+             WHERE $2::uuid IS NULL OR p.workspace_id = $2
+         ) pc
          LEFT JOIN embeddings e
            ON e.content_hash = pc.content_hash AND e.model_id = $1",
     )
     .bind(model_id)
+    .bind(workspace_id)
     .fetch_one(pool)
     .await?;
     Ok(row)
