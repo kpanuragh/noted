@@ -20,6 +20,8 @@ pub async fn create(
     parent_id: Option<Uuid>,
     title: &str,
 ) -> Result<Page, sqlx::Error> {
+    // SAFETY: only COLS (a &'static str const) is interpolated; every runtime
+    // value below is parameter-bound. Never wrap a string containing user input.
     sqlx::query_as::<_, Page>(sqlx::AssertSqlSafe(format!(
         "INSERT INTO pages (workspace_id, parent_id, title)
          VALUES ($1, $2, $3) RETURNING {COLS}"
@@ -32,6 +34,8 @@ pub async fn create(
 }
 
 pub async fn get(pool: &PgPool, id: Uuid) -> Result<Option<Page>, sqlx::Error> {
+    // SAFETY: only COLS (a &'static str const) is interpolated; every runtime
+    // value below is parameter-bound. Never wrap a string containing user input.
     sqlx::query_as::<_, Page>(sqlx::AssertSqlSafe(format!(
         "SELECT {COLS} FROM pages WHERE id = $1 AND archived_at IS NULL"
     )))
@@ -46,6 +50,8 @@ pub async fn children(
     parent_id: Option<Uuid>,
 ) -> Result<Vec<Page>, sqlx::Error> {
     // `IS NOT DISTINCT FROM` so a NULL parent_id matches root pages.
+    // SAFETY: only COLS (a &'static str const) is interpolated; every runtime
+    // value below is parameter-bound. Never wrap a string containing user input.
     sqlx::query_as::<_, Page>(sqlx::AssertSqlSafe(format!(
         "SELECT {COLS} FROM pages
          WHERE workspace_id = $1

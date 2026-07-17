@@ -44,8 +44,14 @@ async fn get_returns_none_for_unknown_id() {
 async fn rename_updates_title_and_bumps_updated_at() {
     let (pool, ws) = setup().await;
     let p = pages::create(&pool, ws, None, "Before").await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     pages::rename(&pool, p.id, "After").await.unwrap();
     let after = pages::get(&pool, p.id).await.unwrap().unwrap();
     assert_eq!(after.title, "After");
-    assert!(after.updated_at >= p.updated_at);
+    assert!(
+        after.updated_at > p.updated_at,
+        "rename() must bump updated_at: before={}, after={}",
+        p.updated_at,
+        after.updated_at
+    );
 }
