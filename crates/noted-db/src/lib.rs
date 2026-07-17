@@ -12,3 +12,4 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
 }
 
 pub mod pages;
+pub mod docs;
