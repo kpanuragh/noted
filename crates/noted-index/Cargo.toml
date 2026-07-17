@@ -14,6 +14,9 @@ noted-db = { path = "../noted-db" }
 thiserror.workspace = true
 tracing.workspace = true
 tokio.workspace = true
+fastembed = "5.17"
+async-trait = "0.1"
 
 [dev-dependencies]
 uuid.workspace = true
+async-trait = "0.1"

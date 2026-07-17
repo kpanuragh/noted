@@ -1,5 +1,6 @@
 # Rust
 /target/
+.fastembed_cache/
 
 # Node
 node_modules/
