@@ -1,11 +1,17 @@
-use noted_index::chunk::{chunk_blocks, estimate_tokens, Chunk, SourceBlock, MAX_TOKENS};
+use noted_index::chunk::{Chunk, MAX_TOKENS, SourceBlock, chunk_blocks, estimate_tokens};
 
 fn b(node_type: &str, text: &str) -> SourceBlock {
-    SourceBlock { node_type: node_type.into(), text: text.into() }
+    SourceBlock {
+        node_type: node_type.into(),
+        text: text.into(),
+    }
 }
 
 fn long_text(words: usize) -> String {
-    std::iter::repeat("word").take(words).collect::<Vec<_>>().join(" ")
+    std::iter::repeat("word")
+        .take(words)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[test]
@@ -19,16 +25,37 @@ fn a_normal_block_becomes_one_chunk() {
 #[test]
 fn a_short_heading_merges_forward_into_the_next_block() {
     // A heading alone is useless to embed — it must carry what it introduces.
-    let blocks = vec![b("heading", "Postgres tuning"), b("paragraph", &long_text(100))];
+    let blocks = vec![
+        b("heading", "Postgres tuning"),
+        b("paragraph", &long_text(100)),
+    ];
     let chunks = chunk_blocks(&blocks);
-    assert_eq!(chunks.len(), 1, "a short block must merge forward, not stand alone");
-    assert!(chunks[0].text.contains("Postgres tuning"), "the heading text must survive");
-    assert!(chunks[0].text.contains("word"), "the following paragraph must be included");
+    assert_eq!(
+        chunks.len(),
+        1,
+        "a short block must merge forward, not stand alone"
+    );
+    assert!(
+        chunks[0].text.contains("Postgres tuning"),
+        "the heading text must survive"
+    );
+    assert!(
+        chunks[0].text.contains("word"),
+        "the following paragraph must be included"
+    );
 }
 
 #[test]
 fn a_long_block_splits_and_every_piece_is_under_the_ceiling() {
-    let blocks = vec![b("paragraph", &format!("{}. {}. {}.", long_text(400), long_text(400), long_text(400)))];
+    let blocks = vec![b(
+        "paragraph",
+        &format!(
+            "{}. {}. {}.",
+            long_text(400),
+            long_text(400),
+            long_text(400)
+        ),
+    )];
     let chunks = chunk_blocks(&blocks);
     assert!(chunks.len() > 1, "a block over the ceiling must split");
     for c in &chunks {
@@ -43,7 +70,10 @@ fn a_long_block_splits_and_every_piece_is_under_the_ceiling() {
 #[test]
 fn empty_and_whitespace_blocks_produce_no_chunks() {
     let blocks = vec![b("paragraph", ""), b("paragraph", "   \n  ")];
-    assert!(chunk_blocks(&blocks).is_empty(), "empty blocks must not be embedded");
+    assert!(
+        chunk_blocks(&blocks).is_empty(),
+        "empty blocks must not be embedded"
+    );
 }
 
 /// Content addressing is only useful if the hash is a pure function of the text.
@@ -66,10 +96,20 @@ fn different_text_produces_different_hashes() {
 /// emitted rather than silently dropped.
 #[test]
 fn a_trailing_short_block_is_not_lost() {
-    let blocks = vec![b("paragraph", &long_text(100)), b("paragraph", "short tail")];
+    let blocks = vec![
+        b("paragraph", &long_text(100)),
+        b("paragraph", "short tail"),
+    ];
     let chunks: Vec<Chunk> = chunk_blocks(&blocks);
-    let all: String = chunks.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join(" ");
-    assert!(all.contains("short tail"), "a trailing short block must not be dropped");
+    let all: String = chunks
+        .iter()
+        .map(|c| c.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        all.contains("short tail"),
+        "a trailing short block must not be dropped"
+    );
 }
 
 /// CJK/Kana/Hangul have no whitespace word boundaries, so `split_whitespace`

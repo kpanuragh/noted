@@ -9,10 +9,7 @@ pub struct PendingChunk {
 
 /// Insert chunks, ignoring ones already present. Content-addressed, so an
 /// existing hash means the text is byte-identical — there is nothing to update.
-pub async fn upsert(
-    pool: &PgPool,
-    rows: &[(String, String, i32)],
-) -> Result<u64, sqlx::Error> {
+pub async fn upsert(pool: &PgPool, rows: &[(String, String, i32)]) -> Result<u64, sqlx::Error> {
     if rows.is_empty() {
         return Ok(0);
     }

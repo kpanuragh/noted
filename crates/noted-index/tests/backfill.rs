@@ -33,14 +33,18 @@ async fn m1a_instance(pages: usize) -> (noted_db::PgPool, Vec<uuid::Uuid>, Strin
 
     let mut page_ids = Vec::new();
     for p in 0..pages {
-        let page: uuid::Uuid =
-            sqlx::query_scalar("INSERT INTO pages (workspace_id, title) VALUES ($1, 'p') RETURNING id")
-                .bind(ws)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let page: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO pages (workspace_id, title) VALUES ($1, 'p') RETURNING id",
+        )
+        .bind(ws)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
-        let body = std::iter::repeat("word").take(100).collect::<Vec<_>>().join(" ");
+        let body = std::iter::repeat("word")
+            .take(100)
+            .collect::<Vec<_>>()
+            .join(" ");
         let text = format!("{marker} page {p} {body}");
         sqlx::query(
             "INSERT INTO blocks (page_id, block_index, node_type, text, content_hash)
@@ -72,11 +76,16 @@ async fn backfills_a_corpus_that_predates_the_pipeline() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(blocks, 3, "setup must have written blocks directly, as M1a would");
+    assert_eq!(
+        blocks, 3,
+        "setup must have written blocks directly, as M1a would"
+    );
 
     // ...and nothing has been chunked, so the queue is empty and a drain-only CLI
     // would report success having done nothing.
-    let unchunked = noted_db::chunks::pending(&pool, "backfill-model", 1000).await.unwrap();
+    let unchunked = noted_db::chunks::pending(&pool, "backfill-model", 1000)
+        .await
+        .unwrap();
     assert!(
         !unchunked.iter().any(|c| c.text.contains(&marker)),
         "precondition: an M1a corpus must have NO chunks queued before the backfill runs"
@@ -85,23 +94,41 @@ async fn backfills_a_corpus_that_predates_the_pipeline() {
     // The sequence the CLI runs.
     let all = noted_db::pages::all_page_ids(&pool).await.unwrap();
     for page_id in &page_ids {
-        assert!(all.contains(page_id), "all_page_ids must return every live page");
+        assert!(
+            all.contains(page_id),
+            "all_page_ids must return every live page"
+        );
     }
     let mut chunked = 0usize;
     for page_id in &all {
-        chunked += noted_index::materialize::rechunk_page(&pool, *page_id).await.unwrap();
+        chunked += noted_index::materialize::rechunk_page(&pool, *page_id)
+            .await
+            .unwrap();
     }
-    assert!(chunked > 0, "materialising an existing corpus must produce chunks");
+    assert!(
+        chunked > 0,
+        "materialising an existing corpus must produce chunks"
+    );
 
     // The payoff: the queue now has this corpus's chunks in it.
-    let pending = noted_db::chunks::pending(&pool, "backfill-model", 1000).await.unwrap();
-    let mine: Vec<_> = pending.iter().filter(|c| c.text.contains(&marker)).collect();
+    let pending = noted_db::chunks::pending(&pool, "backfill-model", 1000)
+        .await
+        .unwrap();
+    let mine: Vec<_> = pending
+        .iter()
+        .filter(|c| c.text.contains(&marker))
+        .collect();
     assert!(
         !mine.is_empty(),
         "after materialising, a pre-existing corpus must appear in the work queue; \
          an empty queue here is the silent 'indexed nothing' failure"
     );
-    assert_eq!(mine.len(), 3, "every page in the corpus must contribute a chunk, got {}", mine.len());
+    assert_eq!(
+        mine.len(),
+        3,
+        "every page in the corpus must contribute a chunk, got {}",
+        mine.len()
+    );
 }
 
 /// `all_page_ids` feeds the backfill, so an archived page slipping in would
@@ -117,6 +144,12 @@ async fn all_page_ids_excludes_archived_pages() {
         .unwrap();
 
     let all = noted_db::pages::all_page_ids(&pool).await.unwrap();
-    assert!(!all.contains(&archived), "an archived page must not be backfilled");
-    assert!(all.contains(&page_ids[1]), "a live page must still be backfilled");
+    assert!(
+        !all.contains(&archived),
+        "an archived page must not be backfilled"
+    );
+    assert!(
+        all.contains(&page_ids[1]),
+        "a live page must still be backfilled"
+    );
 }

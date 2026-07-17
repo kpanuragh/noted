@@ -59,7 +59,11 @@ fn hash(text: &str) -> String {
 
 fn make(text: String) -> Chunk {
     let token_estimate = estimate_tokens(&text);
-    Chunk { content_hash: hash(&text), text, token_estimate }
+    Chunk {
+        content_hash: hash(&text),
+        text,
+        token_estimate,
+    }
 }
 
 /// Split a too-long text at sentence boundaries, keeping every piece under
@@ -97,8 +101,7 @@ fn split_long(text: &str) -> Vec<String> {
             }
             continue;
         }
-        if estimate_tokens(&(current.clone() + sentence)) > MAX_TOKENS
-            && !current.trim().is_empty()
+        if estimate_tokens(&(current.clone() + sentence)) > MAX_TOKENS && !current.trim().is_empty()
         {
             out.push(std::mem::take(&mut current));
         }

@@ -1,7 +1,7 @@
 use noted_db::PgPool;
 use uuid::Uuid;
 
-use crate::chunk::{chunk_blocks, SourceBlock};
+use crate::chunk::{SourceBlock, chunk_blocks};
 
 /// Read a page's blocks, chunk them, and upsert the results.
 ///

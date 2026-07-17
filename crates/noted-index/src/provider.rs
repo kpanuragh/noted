@@ -12,9 +12,17 @@ pub enum EmbedError {
          column is vector({expected}). Change the model, or migrate the column and \
          re-embed."
     )]
-    DimensionMismatch { expected: usize, got: usize, model: String },
+    DimensionMismatch {
+        expected: usize,
+        got: usize,
+        model: String,
+    },
     #[error("embedding model '{model}' returned {got} vectors for {expected} inputs")]
-    BatchSizeMismatch { expected: usize, got: usize, model: String },
+    BatchSizeMismatch {
+        expected: usize,
+        got: usize,
+        model: String,
+    },
 }
 
 /// Shared invariant check for any `EmbeddingProvider::embed` implementation: the
@@ -77,7 +85,9 @@ impl FastEmbed {
                 .with_show_download_progress(true),
         )
         .map_err(|e| EmbedError::Model(e.to_string()))?;
-        let provider = Self { model: std::sync::Arc::new(std::sync::Mutex::new(model)) };
+        let provider = Self {
+            model: std::sync::Arc::new(std::sync::Mutex::new(model)),
+        };
         // A `FastEmbed` must not be able to exist in a state that violates the
         // schema's dimensionality. `validate_dimensions` stays public too — Task 6
         // still calls it for arbitrary `dyn EmbeddingProvider`s (Task M1b-3 adds an
@@ -90,8 +100,12 @@ impl FastEmbed {
 
 #[async_trait::async_trait]
 impl EmbeddingProvider for FastEmbed {
-    fn dimensions(&self) -> usize { EMBEDDING_DIMS }
-    fn model_id(&self) -> &str { "bge-base-en-v1.5" }
+    fn dimensions(&self) -> usize {
+        EMBEDDING_DIMS
+    }
+    fn model_id(&self) -> &str {
+        "bge-base-en-v1.5"
+    }
 
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
         let n = texts.len();
@@ -108,7 +122,8 @@ impl EmbeddingProvider for FastEmbed {
             let mut m = model
                 .lock()
                 .map_err(|e| EmbedError::Model(format!("embedding model mutex poisoned: {e}")))?;
-            m.embed(owned, None).map_err(|e| EmbedError::Model(e.to_string()))
+            m.embed(owned, None)
+                .map_err(|e| EmbedError::Model(e.to_string()))
         })
         .await
         .map_err(|e| EmbedError::Model(format!("embedding task failed: {e}")))??;

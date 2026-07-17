@@ -1,13 +1,17 @@
 use noted_index::provider::{
-    validate_dimensions, verify_batch, EmbedError, EmbeddingProvider, EMBEDDING_DIMS,
+    EMBEDDING_DIMS, EmbedError, EmbeddingProvider, validate_dimensions, verify_batch,
 };
 
 struct Fake(usize);
 
 #[async_trait::async_trait]
 impl EmbeddingProvider for Fake {
-    fn dimensions(&self) -> usize { self.0 }
-    fn model_id(&self) -> &str { "fake" }
+    fn dimensions(&self) -> usize {
+        self.0
+    }
+    fn model_id(&self) -> &str {
+        "fake"
+    }
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
         Ok(texts.iter().map(|_| vec![0.1; self.0]).collect())
     }
@@ -26,7 +30,11 @@ fn a_provider_matching_the_schema_dimension_is_accepted() {
 fn a_mismatched_provider_is_rejected_with_a_useful_error() {
     let err = validate_dimensions(&Fake(1024)).unwrap_err();
     match err {
-        EmbedError::DimensionMismatch { expected, got, ref model } => {
+        EmbedError::DimensionMismatch {
+            expected,
+            got,
+            ref model,
+        } => {
             assert_eq!(expected, EMBEDDING_DIMS);
             assert_eq!(got, 1024);
             assert_eq!(model, "fake");
@@ -34,7 +42,10 @@ fn a_mismatched_provider_is_rejected_with_a_useful_error() {
         other => panic!("expected DimensionMismatch, got {other:?}"),
     }
     let msg = validate_dimensions(&Fake(1024)).unwrap_err().to_string();
-    assert!(msg.contains("768") && msg.contains("1024"), "error must name both dimensions: {msg}");
+    assert!(
+        msg.contains("768") && msg.contains("1024"),
+        "error must name both dimensions: {msg}"
+    );
 }
 
 /// `zip` silently truncates on a length mismatch, so a provider that returns
@@ -45,11 +56,17 @@ fn a_mismatched_provider_is_rejected_with_a_useful_error() {
 #[test]
 fn a_provider_returning_too_few_vectors_is_an_error() {
     let texts = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-    let out: Vec<Vec<f32>> = (0..texts.len() - 1).map(|_| vec![0.1; EMBEDDING_DIMS]).collect();
+    let out: Vec<Vec<f32>> = (0..texts.len() - 1)
+        .map(|_| vec![0.1; EMBEDDING_DIMS])
+        .collect();
 
     let err = verify_batch(&out, texts.len(), "fake").unwrap_err();
     match err {
-        EmbedError::BatchSizeMismatch { expected, got, ref model } => {
+        EmbedError::BatchSizeMismatch {
+            expected,
+            got,
+            ref model,
+        } => {
             assert_eq!(expected, 3);
             assert_eq!(got, 2);
             assert_eq!(model, "fake");
@@ -64,7 +81,11 @@ fn a_provider_returning_wrong_dimensions_is_an_error() {
 
     let err = verify_batch(&out, 2, "fake").unwrap_err();
     match err {
-        EmbedError::DimensionMismatch { expected, got, ref model } => {
+        EmbedError::DimensionMismatch {
+            expected,
+            got,
+            ref model,
+        } => {
             assert_eq!(expected, EMBEDDING_DIMS);
             assert_eq!(got, 512);
             assert_eq!(model, "fake");
@@ -72,7 +93,10 @@ fn a_provider_returning_wrong_dimensions_is_an_error() {
         other => panic!("expected DimensionMismatch, got {other:?}"),
     }
     let msg = verify_batch(&out, 2, "fake").unwrap_err().to_string();
-    assert!(msg.contains("768") && msg.contains("512"), "error must name both dimensions: {msg}");
+    assert!(
+        msg.contains("768") && msg.contains("512"),
+        "error must name both dimensions: {msg}"
+    );
 }
 
 /// `FastEmbed::embed` short-circuits on an empty batch before touching the model
@@ -96,9 +120,15 @@ async fn fastembed_produces_768_dimensional_vectors() {
     assert_eq!(p.dimensions(), EMBEDDING_DIMS);
     validate_dimensions(&p).expect("the default provider must satisfy the schema");
 
-    let out = p.embed(&["hello world".to_string(), "goodbye".to_string()]).await.unwrap();
+    let out = p
+        .embed(&["hello world".to_string(), "goodbye".to_string()])
+        .await
+        .unwrap();
     assert_eq!(out.len(), 2);
     assert_eq!(out[0].len(), EMBEDDING_DIMS);
-    assert!(out[0].iter().any(|v| *v != 0.0), "embedding must not be all zeros");
+    assert!(
+        out[0].iter().any(|v| *v != 0.0),
+        "embedding must not be all zeros"
+    );
     assert_ne!(out[0], out[1], "different text must embed differently");
 }

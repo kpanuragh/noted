@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use noted_db::chunks::PendingChunk;
 use noted_db::PgPool;
+use noted_db::chunks::PendingChunk;
 
-use crate::provider::{validate_dimensions, verify_batch, EmbedError, EmbeddingProvider};
+use crate::provider::{EmbedError, EmbeddingProvider, validate_dimensions, verify_batch};
 
 /// How many chunks to embed per round trip. Large enough to amortise the model
 /// call, small enough that a crash loses little.
@@ -45,7 +45,11 @@ pub enum WorkerError {
          provider is broken, or those chunks cannot be embedded. Re-running is safe and will \
          retry them."
     )]
-    Stalled { batches: usize, chunks: usize, embedded: usize },
+    Stalled {
+        batches: usize,
+        chunks: usize,
+        embedded: usize,
+    },
 }
 
 pub struct Worker {
@@ -101,7 +105,10 @@ impl Worker {
     ) -> Vec<(String, Vec<f32>)> {
         let mut out = Vec::new();
         for chunk in batch {
-            match self.embed_checked(std::slice::from_ref(&chunk.text), model_id).await {
+            match self
+                .embed_checked(std::slice::from_ref(&chunk.text), model_id)
+                .await
+            {
                 Ok(mut vectors) if !vectors.is_empty() => {
                     out.push((chunk.content_hash.clone(), vectors.remove(0)));
                 }
