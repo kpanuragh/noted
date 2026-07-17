@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/noted-db", "crates/noted-crdt", "crates/noted-server"]
+members = ["crates/noted-db", "crates/noted-crdt", "crates/noted-server", "crates/noted-index"]
 
 [workspace.package]
 edition = "2024"

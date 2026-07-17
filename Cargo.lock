@@ -1016,6 +1016,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "noted-index"
+version = "0.1.0"
+dependencies = [
+ "noted-db",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "noted-server"
 version = "0.1.0"
 dependencies = [
