@@ -1,5 +1,6 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use noted_server::routes::health::{parse_version, MIN_PGVECTOR};
 use tower::ServiceExt;
 
 async fn test_app() -> axum::Router {
@@ -23,10 +24,11 @@ async fn health_reports_ok_and_pgvector_version() {
     let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["status"], "ok");
+    let version = json["pgvector"].as_str().unwrap();
+    let parsed = parse_version(version);
     assert!(
-        json["pgvector"].as_str().unwrap().starts_with("0.8")
-            || json["pgvector"].as_str().unwrap() > "0.8",
+        parsed.is_some_and(|v| v >= MIN_PGVECTOR),
         "health must surface a pgvector version meeting the >=0.8 floor, got {}",
-        json["pgvector"]
+        version
     );
 }
