@@ -106,10 +106,8 @@ pub async fn store_embedding(
     sqlx::query(
         "INSERT INTO embeddings (content_hash, model_id, embedding)
          VALUES ($1, $2, $3)
-         ON CONFLICT (content_hash) DO UPDATE
-           SET embedding = EXCLUDED.embedding,
-               model_id = EXCLUDED.model_id,
-               created_at = now()",
+         ON CONFLICT (content_hash, model_id) DO UPDATE
+           SET embedding = EXCLUDED.embedding",
     )
     .bind(content_hash)
     .bind(model_id)

@@ -57,9 +57,14 @@ async fn pending_is_scoped_to_the_model() {
     );
 }
 
-/// Content addressing: the same text on two pages is ONE chunk, ONE embedding.
+/// This test hard-codes the same hash `h` for both pages rather than deriving
+/// it by hashing identical text, so it does NOT prove content-addressing
+/// (identical text -> identical hash) — hash computation lives in `noted-index`,
+/// not here, and content-addressing proper is tested there. What this proves is
+/// storage-layer behavior: `ON CONFLICT DO NOTHING` collapses duplicate chunk
+/// inserts, and `pending()`'s `DISTINCT` collapses a hash referenced by two pages.
 #[tokio::test]
-async fn identical_text_on_two_pages_is_one_chunk() {
+async fn a_hash_referenced_by_two_pages_is_one_chunk_and_queued_once() {
     let (pool, page_a) = setup().await;
     let (_, page_b) = setup().await;
     let h = format!("shared-{}", uuid::Uuid::new_v4());
@@ -68,7 +73,7 @@ async fn identical_text_on_two_pages_is_one_chunk() {
 
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM chunks WHERE content_hash = $1")
         .bind(&h).fetch_one(&pool).await.unwrap();
-    assert_eq!(n, 1, "identical text on two pages must produce exactly one chunk row");
+    assert_eq!(n, 1, "a hash referenced by two pages must produce exactly one chunk row");
 
     let pending = chunks::pending(&pool, "m1", 1000).await.unwrap();
     let times = pending.iter().filter(|c| c.content_hash == h).count();
@@ -92,6 +97,35 @@ async fn an_orphaned_chunk_is_not_pending() {
     assert!(
         !pending.iter().any(|c| c.content_hash == h),
         "a chunk no page references must not be queued for embedding"
+    );
+}
+
+/// Coexistence: re-embedding a chunk under a different model must NOT overwrite
+/// the first model's vector. Both rows must exist side by side, so the old
+/// model keeps serving search while the new model backfills.
+#[tokio::test]
+async fn two_models_embeddings_coexist_for_one_chunk() {
+    let (pool, page) = setup().await;
+    let h = format!("coexist-{}", uuid::Uuid::new_v4());
+    live_chunk(&pool, page, &h, "coexist text").await;
+
+    chunks::store_embedding(&pool, &h, "model-a", &vec![0.1f32; 768]).await.unwrap();
+    chunks::store_embedding(&pool, &h, "model-b", &vec![0.2f32; 768]).await.unwrap();
+
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM embeddings WHERE content_hash = $1")
+        .bind(&h).fetch_one(&pool).await.unwrap();
+    assert_eq!(n, 2, "both models' embeddings must coexist for one chunk");
+
+    let pending_a = chunks::pending(&pool, "model-a", 1000).await.unwrap();
+    assert!(
+        !pending_a.iter().any(|c| c.content_hash == h),
+        "model-a is already embedded and must not be pending"
+    );
+
+    let pending_c = chunks::pending(&pool, "model-c", 1000).await.unwrap();
+    assert!(
+        pending_c.iter().any(|c| c.content_hash == h),
+        "a third model with no embedding yet must be pending"
     );
 }
 
