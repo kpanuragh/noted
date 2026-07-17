@@ -13,12 +13,6 @@ pub struct ProjectedBlock {
     pub content_hash: String,
 }
 
-pub fn content_hash(text: &str) -> String {
-    let mut h = Sha256::new();
-    h.update(text.as_bytes());
-    format!("{:x}", h.finalize())
-}
-
 /// Hash covering both `node_type` and `text`, used by `project()`. Hashing
 /// text alone would make e.g. turning a paragraph into a heading (same
 /// words, different node type) produce an identical hash, which would make

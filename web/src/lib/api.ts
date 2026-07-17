@@ -1,4 +1,4 @@
-export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8080";
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8080";
 
 export type Page = {
   id: string;
@@ -18,6 +18,11 @@ export const api = {
     url.searchParams.set("workspace_id", workspaceId);
     if (parentId) url.searchParams.set("parent_id", parentId);
     return json<Page[]>(await fetch(url.toString()));
+  },
+
+  async getPage(id: string): Promise<Page> {
+    const url = new URL(`/api/pages/${id}`, API_BASE);
+    return json<Page>(await fetch(url.toString()));
   },
 
   async createPage(

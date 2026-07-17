@@ -68,9 +68,12 @@ export function createProvider(pageId: string, doc: Y.Doc) {
     const socket = new WebSocket(url.toString());
     socket.binaryType = "arraybuffer";
     ws = socket;
+    // Opening proves nothing — the server upgrades before touching the DB,
+    // so a failing session still opens successfully. Only reset the backoff
+    // once we've actually handled a valid frame on this connection.
+    let syncedSinceConnect = false;
 
     socket.onopen = () => {
-      reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
       socket.send(frame(SYNC_STEP1, Y.encodeStateVector(doc)));
     };
 
@@ -87,6 +90,13 @@ export function createProvider(pageId: string, doc: Y.Doc) {
         case SYNC_UPDATE:
           Y.applyUpdate(doc, payload, "remote");
           break;
+        default:
+          return;
+      }
+
+      if (!syncedSinceConnect) {
+        syncedSinceConnect = true;
+        reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
       }
     };
 
