@@ -6,6 +6,11 @@ node_modules/
 /web/.next/
 /web/out/
 
+# Playwright artifacts
+/web/test-results/
+/web/playwright-report/
+/web/tsconfig.tsbuildinfo
+
 # Local env
 .env
 .env.local
