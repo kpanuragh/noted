@@ -8,6 +8,11 @@ pub mod materialize;
 // needs no feature gate. The real (LLM-backed) providers arrive in Task 5.
 pub mod extract;
 
+// Bridges `extract::Extraction` (name-based, as an extractor emits it) to
+// `noted_db::graph`'s id-based primitive writes. Pure db + logic, no
+// network — unconditional like `extract` above.
+pub mod graph_write;
+
 // Embedding drags in fastembed -> ONNX runtime + a HuggingFace model downloader.
 // `noted-server` DOES use this now — it embeds search queries for hybrid search
 // (see noted-server's routes/search.rs) — but not every consumer of this crate
