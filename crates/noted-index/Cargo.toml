@@ -9,7 +9,7 @@ default = []
 # Pulls in the ONNX runtime and the HuggingFace model downloader. Default-off so
 # that `noted-server` — which only calls `materialize::rechunk_page` — does not
 # link an inference stack it never uses. The `noted-index` binary requires it.
-embed = ["dep:fastembed", "dep:async-trait"]
+embed = ["dep:fastembed"]
 
 [dependencies]
 sha2 = "0.10"
@@ -22,7 +22,10 @@ sqlx.workspace = true
 anyhow.workspace = true
 tracing-subscriber = "0.3"
 fastembed = { version = "5.17", optional = true }
-async-trait = { version = "0.1", optional = true }
+# Unconditional (not gated behind `embed`): `extract.rs`'s `ExtractionProvider`
+# trait is pure logic with no db/network dependency, so it — and this macro —
+# must compile under a plain `cargo test`, not just with `--features embed`.
+async-trait = "0.1"
 
 [[bin]]
 name = "noted-index"
