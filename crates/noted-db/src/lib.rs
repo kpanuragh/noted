@@ -15,3 +15,4 @@ pub mod blocks;
 pub mod chunks;
 pub mod docs;
 pub mod pages;
+pub mod search;
