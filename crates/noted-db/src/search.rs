@@ -74,14 +74,48 @@ pub struct RelatedHit {
 /// embeddings against every other chunk's. That is what makes the related-notes
 /// panel free — no inference in the request path.
 ///
-/// `hnsw.iterative_scan` is set because this query FILTERS (workspace, self-
-/// exclusion, model). Without it an HNSW scan with a WHERE clause overfilters:
-/// it silently returns fewer rows than LIMIT asks for. It defaults to `off`.
-///
 /// Deliberate M1c simplification: only the page's FIRST chunk embedding is used
-/// (`src LIMIT 1`). Averaging a page's chunk vectors, or taking the best match
-/// across all of them, is a retrieval-quality question that can't be evaluated
-/// until the related-notes panel exists and someone looks at real results.
+/// (`src ... LIMIT 1`). Averaging a page's chunk vectors, or taking the best
+/// match across all of them, is a retrieval-quality question that can't be
+/// evaluated until the related-notes panel exists and someone looks at real
+/// results. The `ORDER BY pc.chunk_index` is for DETERMINISM — without it
+/// "the first chunk" is whichever row Postgres happened to return, so the same
+/// page could yield different related lists on successive calls.
+///
+/// # Why the query is shaped like this
+///
+/// pgvector can only use `embeddings_hnsw_idx` for `ORDER BY <vector> <=>
+/// <const> LIMIT n` where that ordering comes DIRECTLY off the base-relation
+/// scan and feeds straight into a Limit. Anything between the scan and the
+/// sort — an aggregate, a join, a semi-join — destroys index-provided ordering
+/// and silently turns this into a filtered full scan over every embedding.
+/// So the ANN lives alone in `near`, and pages are resolved AFTERWARDS.
+///
+/// The workspace filter MUST stay INSIDE `near`. `embeddings` has no
+/// `workspace_id` and cannot get one: chunks are content-addressed, so two
+/// workspaces holding identical text legitimately SHARE a chunk and its
+/// embedding. Overfetching globally and filtering by workspace afterwards
+/// would let a large multi-tenant instance spend the whole top-N on other
+/// tenants' pages and return nothing for this one.
+///
+/// That filtered ANN is exactly what `hnsw.iterative_scan` exists for: without
+/// it an HNSW scan with a WHERE clause overfilters, silently returning fewer
+/// rows than LIMIT asks for. It defaults to `off`, hence the `SET LOCAL`.
+///
+/// `OFFSET 0` in the workspace EXISTS is an OPTIMIZATION FENCE, not dead code.
+/// Postgres otherwise pulls an EXISTS sublink up into a semi-join, which puts a
+/// join between the scan and the sort and costs us the index — verified by
+/// EXPLAIN: without it the plan is a `HashAggregate` + `Nested Loop` and never
+/// mentions `embeddings_hnsw_idx`. `simplify_EXISTS_query` declines to pull up
+/// a subquery carrying LIMIT/OFFSET, so the fence keeps it a SubPlan filter on
+/// the index scan. `related_pages_uses_the_hnsw_index` locks this in.
+///
+/// `near` overfetches (`LIMIT $3 * 5`) because one chunk can belong to several
+/// pages and one page to several chunks, so the ANN must yield more candidate
+/// chunks than the final page count. `best` then collapses each page to its
+/// single closest chunk (`DISTINCT ON (p.id)`) — `RelatedHit` promises related
+/// PAGES, and without this a 5-chunk page produces 5 rows that each compete for
+/// the LIMIT, letting one chunky page crowd out every other page.
 pub async fn related_pages(
     pool: &PgPool,
     page_id: Uuid,
@@ -100,20 +134,43 @@ pub async fn related_pages(
              JOIN embeddings e
                ON e.content_hash = pc.content_hash AND e.model_id = $2
              WHERE pc.page_id = $1
+             ORDER BY pc.chunk_index
+             LIMIT 1
          ),
-         ws AS (SELECT workspace_id FROM pages WHERE id = $1)
-         SELECT p.id AS page_id, p.title, c.text AS snippet,
-                MIN(e.embedding <=> (SELECT embedding FROM src LIMIT 1))::real AS distance
-         FROM embeddings e
-         JOIN chunks c        ON c.content_hash = e.content_hash
-         JOIN page_chunks pc  ON pc.content_hash = c.content_hash
-         JOIN pages p         ON p.id = pc.page_id
-         WHERE e.model_id = $2
-           AND p.id <> $1
-           AND p.archived_at IS NULL
-           AND p.workspace_id = (SELECT workspace_id FROM ws)
-           AND EXISTS (SELECT 1 FROM src)
-         GROUP BY p.id, p.title, c.text
+         ws AS (SELECT workspace_id FROM pages WHERE id = $1),
+         near AS (
+             SELECT e.content_hash,
+                    (e.embedding <=> (SELECT embedding FROM src)) AS distance
+             FROM embeddings e
+             WHERE e.model_id = $2
+               AND EXISTS (SELECT 1 FROM src)
+               AND EXISTS (
+                   SELECT 1
+                   FROM page_chunks pc
+                   JOIN pages p ON p.id = pc.page_id
+                   WHERE pc.content_hash = e.content_hash
+                     AND p.workspace_id = (SELECT workspace_id FROM ws)
+                     AND p.id <> $1
+                     AND p.archived_at IS NULL
+                   OFFSET 0
+               )
+             ORDER BY e.embedding <=> (SELECT embedding FROM src)
+             LIMIT $3::bigint * 5
+         ),
+         best AS (
+             SELECT DISTINCT ON (p.id)
+                    p.id AS page_id, p.title, c.text AS snippet, n.distance
+             FROM near n
+             JOIN chunks c       ON c.content_hash = n.content_hash
+             JOIN page_chunks pc ON pc.content_hash = n.content_hash
+             JOIN pages p        ON p.id = pc.page_id
+             WHERE p.id <> $1
+               AND p.archived_at IS NULL
+               AND p.workspace_id = (SELECT workspace_id FROM ws)
+             ORDER BY p.id, n.distance
+         )
+         SELECT page_id, title, snippet, distance::real
+         FROM best
          ORDER BY distance
          LIMIT $3",
     )
