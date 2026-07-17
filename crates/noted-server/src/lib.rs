@@ -27,6 +27,14 @@ fn cors_layer() -> CorsLayer {
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(routes::health::health))
+        .route(
+            "/api/pages",
+            get(routes::pages::list).post(routes::pages::create),
+        )
+        .route(
+            "/api/pages/{id}",
+            get(routes::pages::get).patch(routes::pages::rename),
+        )
         .layer(cors_layer())
         .with_state(state)
 }
