@@ -1,0 +1,12 @@
+# Rust
+/target/
+
+# Node
+node_modules/
+/web/.next/
+/web/out/
+
+# Local env
+.env
+.env.local
+.env.*.local
