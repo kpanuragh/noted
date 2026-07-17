@@ -84,6 +84,8 @@ async fn session(socket: WebSocket, page_id: Uuid, st: AppState) {
         return;
     }
 
+    let mut compaction_disabled = false;
+
     while let Some(Ok(frame)) = rx.next().await {
         let Message::Binary(bytes) = frame else { continue };
         let Some(msg) = parse_msg(&bytes) else {
@@ -109,16 +111,31 @@ async fn session(socket: WebSocket, page_id: Uuid, st: AppState) {
                 }
                 if let Err(e) = docs::append(&st.pool, page_id, &update).await {
                     tracing::error!(error = %e, %page_id, "failed to persist update");
-                    continue;
+                    // Persisting failed. The in-memory doc has already accepted this
+                    // update, so continuing would leave server state diverged from the
+                    // log — the source of truth — with no way to tell the client.
+                    // Close the session instead: the client still holds the edit, and
+                    // the sync handshake on reconnect will re-send it (CRDT updates are
+                    // idempotent). Closing recovers; continuing loses data silently.
+                    break;
                 }
-                // Compact opportunistically once the log grows long.
-                match docs::update_count(&st.pool, page_id).await {
-                    Ok(n) if n > docs::COMPACT_THRESHOLD => {
-                        if let Err(e) = docs::compact(&st.pool, page_id, &doc.encode_full()).await {
-                            tracing::warn!(error = %e, %page_id, "compaction failed");
+                // Compact opportunistically once the log grows long. Skip once a
+                // compaction has failed this session: the count stays above the
+                // threshold on failure, so retrying unconditionally would re-serialise
+                // the whole document (encode_full) plus a DELETE+INSERT on every
+                // subsequent message with no backoff. A later session will retry.
+                if !compaction_disabled {
+                    match docs::update_count(&st.pool, page_id).await {
+                        Ok(n) if n > docs::COMPACT_THRESHOLD => {
+                            if let Err(e) =
+                                docs::compact(&st.pool, page_id, &doc.encode_full()).await
+                            {
+                                tracing::warn!(error = %e, %page_id, "compaction failed; disabling for this session");
+                                compaction_disabled = true;
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
         }
