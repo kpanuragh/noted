@@ -6,3 +6,7 @@ pub async fn connect(url: &str) -> Result<PgPool, sqlx::Error> {
         .connect(url)
         .await
 }
+
+pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
+    sqlx::migrate!("./migrations").run(pool).await
+}
