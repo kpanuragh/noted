@@ -49,14 +49,97 @@ async fn rechunk_is_idempotent() {
 
     rechunk_page(&pool, page).await.unwrap();
     let before: i64 = sqlx::query_scalar("SELECT count(*) FROM chunks").fetch_one(&pool).await.unwrap();
+    let links_before: Vec<(i32, String)> = sqlx::query_as(
+        "SELECT chunk_index, content_hash FROM page_chunks WHERE page_id = $1 ORDER BY chunk_index",
+    )
+    .bind(page).fetch_all(&pool).await.unwrap();
+
     rechunk_page(&pool, page).await.unwrap();
     let after: i64 = sqlx::query_scalar("SELECT count(*) FROM chunks").fetch_one(&pool).await.unwrap();
+    let links_after: Vec<(i32, String)> = sqlx::query_as(
+        "SELECT chunk_index, content_hash FROM page_chunks WHERE page_id = $1 ORDER BY chunk_index",
+    )
+    .bind(page).fetch_all(&pool).await.unwrap();
 
     assert_eq!(before, after, "rechunking unchanged blocks must add no rows");
+    assert!(before > 0, "the page must actually have produced chunks");
+    assert_eq!(
+        links_before, links_after,
+        "rechunking unchanged blocks must leave page_chunks links (hashes and order) unchanged"
+    );
 }
 
 #[tokio::test]
 async fn a_page_with_no_blocks_produces_no_chunks() {
     let (pool, page) = setup().await;
     assert_eq!(rechunk_page(&pool, page).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn rechunk_writes_page_chunk_links() {
+    let (pool, page) = setup().await;
+    put_block(&pool, page, 0, &long(100)).await;
+
+    rechunk_page(&pool, page).await.unwrap();
+
+    let links: Vec<(i32, String)> = sqlx::query_as(
+        "SELECT chunk_index, content_hash FROM page_chunks WHERE page_id = $1 ORDER BY chunk_index",
+    )
+    .bind(page).fetch_all(&pool).await.unwrap();
+    assert!(!links.is_empty(), "rechunk must write page_chunks links, not just chunk rows");
+
+    // Every linked content_hash must actually resolve to a chunk row (the FK
+    // guarantees this, but assert the join returns rows).
+    let joined: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM page_chunks pc JOIN chunks c ON c.content_hash = pc.content_hash
+         WHERE pc.page_id = $1",
+    )
+    .bind(page).fetch_one(&pool).await.unwrap();
+    assert_eq!(joined as usize, links.len(), "every page_chunks link must join to a chunks row");
+
+    let indices: Vec<i32> = links.iter().map(|(idx, _)| *idx).collect();
+    let expected: Vec<i32> = (0..indices.len() as i32).collect();
+    assert_eq!(indices, expected, "chunk_index must start at 0 and be contiguous");
+}
+
+#[tokio::test]
+async fn rechunked_chunks_appear_in_the_work_queue() {
+    let (pool, page) = setup().await;
+    put_block(&pool, page, 0, &format!("distinctiveword {}", long(100))).await;
+
+    rechunk_page(&pool, page).await.unwrap();
+
+    let pending = noted_db::chunks::pending(&pool, "test-model", 100).await.unwrap();
+    assert!(
+        pending.iter().any(|c| c.text.contains("distinctiveword")),
+        "chunks produced by rechunk_page must appear in the work queue: {:?}",
+        pending.iter().map(|c| &c.content_hash).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn emptying_a_page_drops_its_stale_links() {
+    let (pool, page) = setup().await;
+    put_block(&pool, page, 0, &long(100)).await;
+
+    rechunk_page(&pool, page).await.unwrap();
+    let links_before: i64 = sqlx::query_scalar("SELECT count(*) FROM page_chunks WHERE page_id = $1")
+        .bind(page).fetch_one(&pool).await.unwrap();
+    assert!(links_before > 0, "setup must have produced page_chunks links");
+
+    let chunks_before: i64 = sqlx::query_scalar("SELECT count(*) FROM chunks").fetch_one(&pool).await.unwrap();
+
+    sqlx::query("DELETE FROM blocks WHERE page_id = $1")
+        .bind(page).execute(&pool).await.unwrap();
+    rechunk_page(&pool, page).await.unwrap();
+
+    let links_after: i64 = sqlx::query_scalar("SELECT count(*) FROM page_chunks WHERE page_id = $1")
+        .bind(page).fetch_one(&pool).await.unwrap();
+    assert_eq!(links_after, 0, "emptying a page's blocks must drop its stale page_chunks links");
+
+    let chunks_after: i64 = sqlx::query_scalar("SELECT count(*) FROM chunks").fetch_one(&pool).await.unwrap();
+    assert!(
+        chunks_after >= chunks_before,
+        "chunks rows must not be deleted when a page's links go stale (orphans are kept deliberately)"
+    );
 }
