@@ -35,6 +35,7 @@ pub fn app(state: AppState) -> Router {
             "/api/pages/{id}",
             get(routes::pages::get).patch(routes::pages::rename),
         )
+        .route("/sync/{page_id}", get(routes::sync::handler))
         .layer(cors_layer())
         .with_state(state)
 }
