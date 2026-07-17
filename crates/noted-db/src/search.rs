@@ -269,7 +269,8 @@ pub async fn hybrid(
              SELECT b.page_id, b.text AS snippet,
                     ROW_NUMBER() OVER (
                         ORDER BY ts_rank_cd(to_tsvector('english', b.text),
-                                            plainto_tsquery('english', $2)) DESC
+                                            plainto_tsquery('english', $2)) DESC,
+                                 b.page_id
                     ) AS rank
              FROM blocks b
              JOIN pages p ON p.id = b.page_id
@@ -308,7 +309,7 @@ pub async fn hybrid(
          ),
          vec AS (
              SELECT page_id, snippet,
-                    ROW_NUMBER() OVER (ORDER BY distance) AS rank
+                    ROW_NUMBER() OVER (ORDER BY distance, page_id) AS rank
              FROM vec_pages
          ),
          fused AS (
