@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 noted-db = { path = "../noted-db" }
 noted-crdt = { path = "../noted-crdt" }
+noted-index = { path = "../noted-index" }
 axum = { version = "0.8", features = ["ws"] }
 tokio.workspace = true
 sqlx.workspace = true

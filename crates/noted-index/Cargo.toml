@@ -18,6 +18,12 @@ uuid.workspace = true
 sqlx.workspace = true
 fastembed = "5.17"
 async-trait = "0.1"
+anyhow.workspace = true
+tracing-subscriber = "0.3"
+
+[[bin]]
+name = "noted-index"
+path = "src/bin/noted-index.rs"
 
 [dev-dependencies]
 uuid.workspace = true
