@@ -15,10 +15,15 @@ path = "src/main.rs"
 [dependencies]
 noted-db = { path = "../noted-db" }
 noted-crdt = { path = "../noted-crdt" }
-# default-features = false: the server only materialises chunks. Turning on
-# `embed` here would link the ONNX runtime and a model downloader into the web
-# server for nothing.
-noted-index = { path = "../noted-index", default-features = false }
+# `embed` is back: hybrid search (GET /api/search) must embed the user's query
+# at request time, so the ONNX runtime and model downloader are once again
+# linked into the web server. This reverses the M1b decision that made the
+# server default-features = false — that decision was correct when the server
+# only called `rechunk_page`, but hybrid search cannot exist without it. The
+# feature flag itself stays: `noted-index` remains slim by default so a
+# search-free deployment (or the `noted-index` worker's own dev-deps) can opt
+# out.
+noted-index = { path = "../noted-index", features = ["embed"] }
 axum = { version = "0.8", features = ["ws"] }
 tokio.workspace = true
 sqlx.workspace = true
@@ -31,6 +36,7 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 anyhow.workspace = true
 thiserror.workspace = true
 futures-util = "0.3"
+async-trait = "0.1"
 
 [dev-dependencies]
 tokio-tungstenite = "0.24"

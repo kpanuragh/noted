@@ -12,7 +12,7 @@ async fn test_app() -> (axum::Router, uuid::Uuid) {
             .fetch_one(&pool)
             .await
             .unwrap();
-    (noted_server::app(noted_server::AppState::new(pool)), ws)
+    (noted_server::app(noted_server::AppState::new_for_test(pool)), ws)
 }
 
 fn post(uri: &str, body: serde_json::Value) -> Request<Body> {

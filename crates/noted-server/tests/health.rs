@@ -8,7 +8,7 @@ async fn test_app() -> axum::Router {
         .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
     let pool = noted_db::connect(&url).await.unwrap();
     noted_db::migrate(&pool).await.unwrap();
-    noted_server::app(noted_server::AppState::new(pool))
+    noted_server::app(noted_server::AppState::new_for_test(pool))
 }
 
 #[tokio::test]

@@ -36,6 +36,9 @@ pub fn app(state: AppState) -> Router {
             get(routes::pages::get).patch(routes::pages::rename),
         )
         .route("/api/pages/{id}/reproject", post(routes::pages::reproject))
+        .route("/api/pages/{id}/related", get(routes::search::related))
+        .route("/api/quickfind", get(routes::search::quick_find))
+        .route("/api/search", get(routes::search::search))
         .route("/sync/{page_id}", get(routes::sync::handler))
         .layer(cors_layer())
         .with_state(state)

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { PageTree } from "@/components/PageTree";
 import { api } from "@/lib/api";
@@ -18,6 +19,7 @@ export default function Home() {
     <main style={{ display: "flex", gap: 24, padding: 24 }}>
       <nav style={{ minWidth: 220 }}>
         <button onClick={handleNewPage}>New page</button>
+        <Link href="/search">Search</Link>
         <PageTree workspaceId={WORKSPACE_ID} onSelect={(p) => router.push(`/pages/${p.id}`)} />
       </nav>
       <section>
