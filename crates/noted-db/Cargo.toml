@@ -11,6 +11,7 @@ uuid.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 noted-crdt = { path = "../noted-crdt" }
+pgvector = { version = "0.4.2", features = ["sqlx"] }
 
 [dev-dependencies]
 tokio.workspace = true

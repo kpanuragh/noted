@@ -15,6 +15,10 @@ path = "src/main.rs"
 [dependencies]
 noted-db = { path = "../noted-db" }
 noted-crdt = { path = "../noted-crdt" }
+# default-features = false: the server only materialises chunks. Turning on
+# `embed` here would link the ONNX runtime and a model downloader into the web
+# server for nothing.
+noted-index = { path = "../noted-index", default-features = false }
 axum = { version = "0.8", features = ["ws"] }
 tokio.workspace = true
 sqlx.workspace = true

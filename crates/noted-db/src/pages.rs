@@ -65,6 +65,20 @@ pub async fn children(
     .await
 }
 
+/// Every non-archived page in the instance. Used by the indexer to materialise
+/// chunks for a corpus that predates the pipeline.
+///
+/// Ordered by `(created_at, id)` so a backfill walks the corpus in a stable
+/// order across runs — `created_at` alone is not unique, hence the `id`
+/// tiebreak.
+pub async fn all_page_ids(pool: &PgPool) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM pages WHERE archived_at IS NULL ORDER BY created_at, id",
+    )
+    .fetch_all(pool)
+    .await
+}
+
 /// Returns `Ok(true)` if a page was renamed, `Ok(false)` if no such page exists.
 pub async fn rename(pool: &PgPool, id: Uuid, title: &str) -> Result<bool, sqlx::Error> {
     let result = sqlx::query("UPDATE pages SET title = $2, updated_at = now() WHERE id = $1")

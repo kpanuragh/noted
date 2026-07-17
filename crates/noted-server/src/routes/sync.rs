@@ -75,8 +75,19 @@ pub async fn handler(
 async fn project_page(hub: &PageHub, st: &AppState, page_id: Uuid) {
     let doc = hub.doc.lock().await;
     let blocks = doc.project();
-    if let Err(e) = noted_db::blocks::replace_for_page(&st.pool, page_id, &blocks).await {
-        tracing::warn!(error = %e, %page_id, "projection failed");
+    match noted_db::blocks::replace_for_page(&st.pool, page_id, &blocks).await {
+        Ok(()) => {
+            // Chunks are content-addressed, so re-chunking unchanged text is a
+            // no-op insert. Cheap enough to run alongside every projection, and
+            // the projection is already debounced, so this does not run per
+            // keystroke.
+            if let Err(e) = noted_index::materialize::rechunk_page(&st.pool, page_id).await {
+                tracing::warn!(error = %e, %page_id, "rechunk failed");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, %page_id, "projection failed");
+        }
     }
 }
 

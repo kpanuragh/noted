@@ -1,0 +1,39 @@
+[package]
+name = "noted-index"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Pulls in the ONNX runtime and the HuggingFace model downloader. Default-off so
+# that `noted-server` — which only calls `materialize::rechunk_page` — does not
+# link an inference stack it never uses. The `noted-index` binary requires it.
+embed = ["dep:fastembed", "dep:async-trait"]
+
+[dependencies]
+sha2 = "0.10"
+noted-db = { path = "../noted-db" }
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+sqlx.workspace = true
+anyhow.workspace = true
+tracing-subscriber = "0.3"
+fastembed = { version = "5.17", optional = true }
+async-trait = { version = "0.1", optional = true }
+
+[[bin]]
+name = "noted-index"
+path = "src/bin/noted-index.rs"
+required-features = ["embed"]
+
+[dev-dependencies]
+uuid.workspace = true
+async-trait = "0.1"
+# Self dev-dependency so this crate's own integration tests (which exercise the
+# worker and the providers) compile with `embed` on under a plain `cargo test`.
+# Without it the gated modules would vanish and those tests would silently stop
+# testing anything.
+noted-index = { path = ".", features = ["embed"] }

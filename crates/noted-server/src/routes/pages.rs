@@ -106,6 +106,12 @@ pub async fn reproject(
     let projected = doc.project();
     blocks::replace_for_page(&st.pool, id, &projected).await?;
 
+    // Rebuilding blocks without refreshing chunks would leave the index stale
+    // right after the endpoint whose entire purpose is repairing staleness.
+    if let Err(e) = noted_index::materialize::rechunk_page(&st.pool, id).await {
+        tracing::warn!(error = %e, page_id = %id, "rechunk failed");
+    }
+
     Ok(Json(ReprojectResponse {
         blocks: projected.len(),
     }))
