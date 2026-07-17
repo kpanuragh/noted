@@ -97,7 +97,7 @@ async fn replace_chunk_edges_marks_extracted_and_is_scoped() {
         (alice, bob, "met".to_string(), 1.0f32),
         (bob, carol, "knows".to_string(), 0.5f32),
     ];
-    graph::replace_chunk_edges(&pool, &h, &model, &edges)
+    graph::replace_chunk_edges(&pool, ws, &h, &model, &edges)
         .await
         .unwrap();
 
@@ -146,15 +146,15 @@ async fn replace_chunk_edges_only_touches_its_own_chunk() {
         .await
         .unwrap();
 
-    graph::replace_chunk_edges(&pool, &h_a, &model, &[(e1, e2, "rel-a".to_string(), 1.0)])
+    graph::replace_chunk_edges(&pool, ws, &h_a, &model, &[(e1, e2, "rel-a".to_string(), 1.0)])
         .await
         .unwrap();
-    graph::replace_chunk_edges(&pool, &h_b, &model, &[(e1, e2, "rel-b".to_string(), 1.0)])
+    graph::replace_chunk_edges(&pool, ws, &h_b, &model, &[(e1, e2, "rel-b".to_string(), 1.0)])
         .await
         .unwrap();
 
     // Replacing A's edges again must not touch B's.
-    graph::replace_chunk_edges(&pool, &h_a, &model, &[(e2, e1, "rel-a2".to_string(), 1.0)])
+    graph::replace_chunk_edges(&pool, ws, &h_a, &model, &[(e2, e1, "rel-a2".to_string(), 1.0)])
         .await
         .unwrap();
 
@@ -184,7 +184,7 @@ async fn replace_chunk_edges_only_touches_its_own_chunk() {
 
 #[tokio::test]
 async fn pending_extraction_returns_live_chunks_with_no_extraction() {
-    let (pool, _ws, page) = setup().await;
+    let (pool, ws, page) = setup().await;
     let model_a = format!("model-a-{}", uuid::Uuid::new_v4());
     let model_b = format!("model-b-{}", uuid::Uuid::new_v4());
     let h = format!("hash-{}", uuid::Uuid::new_v4());
@@ -198,7 +198,7 @@ async fn pending_extraction_returns_live_chunks_with_no_extraction() {
         "a live chunk with no extraction must be pending"
     );
 
-    graph::replace_chunk_edges(&pool, &h, &model_a, &[])
+    graph::replace_chunk_edges(&pool, ws, &h, &model_a, &[])
         .await
         .unwrap();
 
@@ -239,7 +239,7 @@ async fn replace_chunk_edges_is_idempotent_on_a_duplicate_edge() {
         (e1, e2, "rel".to_string(), 1.0f32),
         (e1, e2, "rel".to_string(), 9.0f32),
     ];
-    graph::replace_chunk_edges(&pool, &h, &model, &edges)
+    graph::replace_chunk_edges(&pool, ws, &h, &model, &edges)
         .await
         .unwrap();
 
@@ -258,10 +258,10 @@ async fn replace_chunk_edges_is_idempotent_on_a_duplicate_edge() {
     assert_eq!(rows[0], 9.0, "the last write's weight must win");
 
     // Calling replace_chunk_edges twice with the same edge must also not crash.
-    graph::replace_chunk_edges(&pool, &h, &model, &[(e1, e2, "rel".to_string(), 2.0)])
+    graph::replace_chunk_edges(&pool, ws, &h, &model, &[(e1, e2, "rel".to_string(), 2.0)])
         .await
         .unwrap();
-    graph::replace_chunk_edges(&pool, &h, &model, &[(e1, e2, "rel".to_string(), 2.0)])
+    graph::replace_chunk_edges(&pool, ws, &h, &model, &[(e1, e2, "rel".to_string(), 2.0)])
         .await
         .unwrap();
 }

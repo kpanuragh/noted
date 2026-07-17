@@ -257,6 +257,56 @@ async fn re_extracting_a_chunk_replaces_exactly_its_edges() {
     );
 }
 
+/// Pins the bug the crown-jewel test above caught: chunk `content_hash` is
+/// GLOBAL (shared across workspaces for byte-identical text), but edges
+/// belong to a single workspace. Workspace A extracts a chunk; workspace B
+/// independently extracts a chunk with the SAME text (same hash). Before the
+/// workspace-scoped DELETE fix, B's `apply_extraction` -> `replace_chunk_edges`
+/// deleted ALL edges for that `(source_chunk_hash, model_id)` regardless of
+/// which workspace they belonged to, so A's live-graph edge count would drop
+/// to zero after B extracts. This test asserts A's edges survive B's
+/// extraction untouched.
+#[tokio::test]
+async fn two_workspaces_with_identical_text_keep_separate_graphs() {
+    let pool = pool().await;
+    let ws_a = workspace(&pool, "shared-a").await;
+    let ws_b = workspace(&pool, "shared-b").await;
+    let page_a = page(&pool, ws_a, "a").await;
+    let page_b = page(&pool, ws_b, "b").await;
+    let run = Uuid::new_v4();
+
+    let text = format!("Nina Otto Piper {run}");
+    let hash_a = set_single_live_chunk(&pool, page_a, &text).await;
+    let hash_b = set_single_live_chunk(&pool, page_b, &text).await;
+    assert_eq!(
+        hash_a, hash_b,
+        "identical text must share the same global content hash"
+    );
+
+    extract_and_apply(&pool, ws_a, &hash_a, &text).await;
+
+    let a_graph_before = live_graph(&pool, ws_a).await;
+    assert!(
+        !a_graph_before.is_empty(),
+        "sanity: workspace A must have edges after its own extraction"
+    );
+
+    // Workspace B independently extracts the SAME chunk hash.
+    extract_and_apply(&pool, ws_b, &hash_b, &text).await;
+
+    let a_graph_after = live_graph(&pool, ws_a).await;
+    assert_eq!(
+        a_graph_before, a_graph_after,
+        "workspace A's edges must be unaffected by workspace B extracting the same shared chunk"
+    );
+
+    let b_graph_after = live_graph(&pool, ws_b).await;
+    assert!(
+        !b_graph_after.is_empty(),
+        "sanity: workspace B must also have its own edges for the shared chunk"
+    );
+}
+
 #[tokio::test]
 async fn entities_do_not_leak_across_workspaces() {
     let pool = pool().await;

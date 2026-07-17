@@ -43,10 +43,22 @@ pub async fn resolve_entity(
 
 /// Replace one chunk's extracted edges for one model, and mark it extracted.
 ///
-/// Runs in ONE transaction: DELETE the chunk's existing edges for this model,
-/// insert the new set, then mark `chunk_extractions`. A crash mid-write rolls
-/// the whole thing back, so a chunk is always either fully extracted (new
-/// edges + marker, old edges gone) or untouched (still pending) — never half.
+/// Runs in ONE transaction: DELETE the chunk's existing edges for this model
+/// **within `workspace_id`**, insert the new set, then mark
+/// `chunk_extractions`. A crash mid-write rolls the whole thing back, so a
+/// chunk is always either fully extracted (new edges + marker, old edges
+/// gone) or untouched (still pending) — never half.
+///
+/// The DELETE is scoped by `workspace_id` as well as `(source_chunk_hash,
+/// model_id)`. This matters because `source_chunk_hash` is a GLOBAL,
+/// content-addressed key (chunks are shared across workspaces when their
+/// text is byte-identical — M1b) but edges belong to a single workspace (they
+/// connect two entities that are themselves per-workspace). Without the
+/// workspace scope, workspace B extracting a chunk workspace A already
+/// extracted would delete A's edges for that chunk out from under it — see
+/// migration `0007_edges_workspace.sql` and
+/// `noted-index/tests/incremental.rs::incremental_extraction_equals_a_full_rebuild`,
+/// which caught exactly this.
 ///
 /// `edges` tuples are `(source_entity_id, target_entity_id, relation, weight)`.
 /// Insert uses `ON CONFLICT ... DO UPDATE SET weight = EXCLUDED.weight`
@@ -66,17 +78,21 @@ pub async fn resolve_entity(
 /// clause itself, just applied client-side first.
 pub async fn replace_chunk_edges(
     pool: &sqlx::PgPool,
+    workspace_id: Uuid,
     chunk_hash: &str,
     model_id: &str,
     edges: &[(Uuid, Uuid, String, f32)],
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
 
-    sqlx::query("DELETE FROM edges WHERE source_chunk_hash = $1 AND model_id = $2")
-        .bind(chunk_hash)
-        .bind(model_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "DELETE FROM edges WHERE workspace_id = $1 AND source_chunk_hash = $2 AND model_id = $3",
+    )
+    .bind(workspace_id)
+    .bind(chunk_hash)
+    .bind(model_id)
+    .execute(&mut *tx)
+    .await?;
 
     if !edges.is_empty() {
         let mut deduped: Vec<(Uuid, Uuid, String, f32)> = Vec::with_capacity(edges.len());
@@ -97,8 +113,8 @@ pub async fn replace_chunk_edges(
         let weights: Vec<f32> = deduped.iter().map(|e| e.3).collect();
 
         sqlx::query(
-            "INSERT INTO edges (source_entity, target_entity, relation, weight, source_chunk_hash, model_id)
-             SELECT s, t, r, w, $5, $6
+            "INSERT INTO edges (source_entity, target_entity, relation, weight, source_chunk_hash, model_id, workspace_id)
+             SELECT s, t, r, w, $5, $6, $7
              FROM UNNEST($1::uuid[], $2::uuid[], $3::text[], $4::real[]) AS x(s, t, r, w)
              ON CONFLICT (source_entity, target_entity, relation, source_chunk_hash, model_id)
              DO UPDATE SET weight = EXCLUDED.weight",
@@ -109,6 +125,7 @@ pub async fn replace_chunk_edges(
         .bind(&weights)
         .bind(chunk_hash)
         .bind(model_id)
+        .bind(workspace_id)
         .execute(&mut *tx)
         .await?;
     }

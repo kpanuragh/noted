@@ -79,5 +79,5 @@ pub async fn apply_extraction(
         tuples.push((source_id, target_id, edge.relation.clone(), edge.weight));
     }
 
-    graph::replace_chunk_edges(pool, chunk_hash, model_id, &tuples).await
+    graph::replace_chunk_edges(pool, workspace_id, chunk_hash, model_id, &tuples).await
 }

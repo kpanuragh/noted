@@ -36,8 +36,8 @@ async fn an_edge_requires_its_source_chunk_to_exist() {
     let e1: uuid::Uuid = sqlx::query_scalar("INSERT INTO entities (workspace_id, name, entity_type) VALUES ($1,'x','C') RETURNING id").bind(ws).fetch_one(&p).await.unwrap();
     let e2: uuid::Uuid = sqlx::query_scalar("INSERT INTO entities (workspace_id, name, entity_type) VALUES ($1,'y','C') RETURNING id").bind(ws).fetch_one(&p).await.unwrap();
     let orphan = sqlx::query(
-        "INSERT INTO edges (source_entity,target_entity,relation,source_chunk_hash,model_id)
-         VALUES ($1,$2,'rel','no-such-chunk','m')").bind(e1).bind(e2).execute(&p).await;
+        "INSERT INTO edges (source_entity,target_entity,relation,source_chunk_hash,model_id,workspace_id)
+         VALUES ($1,$2,'rel','no-such-chunk','m',$3)").bind(e1).bind(e2).bind(ws).execute(&p).await;
     assert!(orphan.is_err(), "an edge must FK to a real chunk (provenance)");
 }
 
@@ -49,7 +49,7 @@ async fn deleting_a_chunk_cascades_to_its_edges() {
     let e2: uuid::Uuid = sqlx::query_scalar("INSERT INTO entities (workspace_id, name, entity_type) VALUES ($1,'y','C') RETURNING id").bind(ws).fetch_one(&p).await.unwrap();
     let h = format!("gh-{}", uuid::Uuid::new_v4());
     sqlx::query("INSERT INTO chunks (content_hash, text, token_estimate) VALUES ($1,'t',1)").bind(&h).execute(&p).await.unwrap();
-    sqlx::query("INSERT INTO edges (source_entity,target_entity,relation,source_chunk_hash,model_id) VALUES ($1,$2,'r',$3,'m')").bind(e1).bind(e2).bind(&h).execute(&p).await.unwrap();
+    sqlx::query("INSERT INTO edges (source_entity,target_entity,relation,source_chunk_hash,model_id,workspace_id) VALUES ($1,$2,'r',$3,'m',$4)").bind(e1).bind(e2).bind(&h).bind(ws).execute(&p).await.unwrap();
     sqlx::query("DELETE FROM chunks WHERE content_hash=$1").bind(&h).execute(&p).await.unwrap();
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM edges WHERE source_chunk_hash=$1").bind(&h).fetch_one(&p).await.unwrap();
     assert_eq!(n, 0, "deleting a chunk must cascade to edges it sourced");
