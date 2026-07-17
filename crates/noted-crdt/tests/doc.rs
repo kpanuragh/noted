@@ -44,6 +44,15 @@ fn concurrent_edits_converge() {
     b.apply_update(&ua).unwrap();
 
     assert_eq!(a.text_for_test(), b.text_for_test(), "CRDT replicas must converge");
+    let merged = a.text_for_test();
+    assert!(
+        merged.contains("from-a"),
+        "converged doc must retain replica A's edit, got: {merged:?}"
+    );
+    assert!(
+        merged.contains("from-b"),
+        "converged doc must retain replica B's edit, got: {merged:?}"
+    );
 }
 
 #[test]
