@@ -34,6 +34,19 @@ impl NotedDoc {
         self.doc.get_or_insert_xml_fragment(ROOT)
     }
 
+    /// Exposes the underlying `Doc` to sibling modules within this crate
+    /// (namely `project`), so they can open their own transactions rather
+    /// than duplicating the fragment-walking logic here.
+    pub(crate) fn doc_pub(&self) -> &Doc {
+        &self.doc
+    }
+
+    /// Exposes the root ProseMirror fragment to sibling modules. See
+    /// `doc_pub`.
+    pub(crate) fn fragment_pub(&self) -> XmlFragmentRef {
+        self.fragment()
+    }
+
     pub fn from_updates(updates: &[Vec<u8>]) -> Result<Self, CrdtError> {
         let d = Self::new();
         for u in updates {
@@ -85,29 +98,40 @@ impl NotedDoc {
         let txn = self.doc.transact();
         (0..frag.len(&txn))
             .filter_map(|i| frag.get(&txn, i))
-            .map(|node| plain_text(&node, &txn))
+            .map(|node| plain_text(&node, &txn, 0))
             .collect::<Vec<_>>()
             .join("\n")
     }
 }
 
+/// XML nesting depth beyond which `plain_text` stops descending. This walk is
+/// on the production projection path (`project.rs`) fed by arbitrarily nested
+/// XML from untrusted WebSocket clients, so an unbounded recursive descent
+/// could be used to overflow the stack. 64 levels is far deeper than any
+/// legitimate ProseMirror document produces.
+const MAX_DEPTH: usize = 64;
+
 /// Recursively extracts the plain (non-XML-tagged) text content of an XML
 /// node, concatenating the text of all descendant text nodes in document
 /// order. `get_string` on `XmlElementRef`/`XmlFragmentRef` returns the XML
-/// serialization (with tags), which is not what callers of `text_for_test`
-/// want.
-fn plain_text<T: ReadTxn>(node: &yrs::types::xml::XmlOut, txn: &T) -> String {
+/// serialization (with tags), which is not what callers want.
+///
+/// `pub(crate)` so `project.rs` reuses this rather than duplicating the walk.
+pub(crate) fn plain_text<T: ReadTxn>(node: &yrs::types::xml::XmlOut, txn: &T, depth: usize) -> String {
     use yrs::types::xml::XmlOut;
+    if depth >= MAX_DEPTH {
+        return String::new();
+    }
     match node {
         XmlOut::Text(t) => t.get_string(txn),
         XmlOut::Element(e) => e
             .children(txn)
-            .map(|child| plain_text(&child, txn))
+            .map(|child| plain_text(&child, txn, depth + 1))
             .collect::<Vec<_>>()
             .join(""),
         XmlOut::Fragment(f) => f
             .children(txn)
-            .map(|child| plain_text(&child, txn))
+            .map(|child| plain_text(&child, txn, depth + 1))
             .collect::<Vec<_>>()
             .join(""),
     }

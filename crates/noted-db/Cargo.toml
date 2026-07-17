@@ -10,6 +10,7 @@ serde.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
+noted-crdt = { path = "../noted-crdt" }
 
 [dev-dependencies]
 tokio.workspace = true

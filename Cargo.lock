@@ -995,6 +995,7 @@ dependencies = [
 name = "noted-crdt"
 version = "0.1.0"
 dependencies = [
+ "sha2 0.10.9",
  "thiserror 2.0.18",
  "yrs",
 ]
@@ -1004,6 +1005,7 @@ name = "noted-db"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "noted-crdt",
  "serde",
  "sqlx",
  "thiserror 2.0.18",

@@ -119,6 +119,11 @@ async fn session(socket: WebSocket, page_id: Uuid, st: AppState) {
                     // idempotent). Closing recovers; continuing loses data silently.
                     break;
                 }
+                if let Err(e) =
+                    noted_db::blocks::replace_for_page(&st.pool, page_id, &doc.project()).await
+                {
+                    tracing::warn!(error = %e, %page_id, "projection failed");
+                }
                 // Compact opportunistically once the log grows long. Skip once a
                 // compaction has failed this session: the count stays above the
                 // threshold on failure, so retrying unconditionally would re-serialise
