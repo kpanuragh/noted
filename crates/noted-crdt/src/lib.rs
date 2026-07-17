@@ -1,1 +1,3 @@
-// filled in by Task 6
+mod doc;
+
+pub use doc::{CrdtError, NotedDoc, ROOT};

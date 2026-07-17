@@ -972,6 +972,7 @@ dependencies = [
 name = "noted-crdt"
 version = "0.1.0"
 dependencies = [
+ "thiserror",
  "yrs",
 ]
 
