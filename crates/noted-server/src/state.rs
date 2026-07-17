@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use noted_crdt::NotedDoc;
 use noted_db::PgPool;
+use noted_index::provider::{EMBEDDING_DIMS, EmbedError, EmbeddingProvider};
 use tokio::sync::{Mutex, broadcast};
 use uuid::Uuid;
 
@@ -67,14 +68,32 @@ pub struct AppState {
     /// removed on last disconnect so this cannot grow to hold every page ever
     /// opened.
     pub hubs: Arc<Mutex<HashMap<Uuid, Arc<PageHub>>>>,
+    /// Embeds a user's search query for the vector arm of hybrid search. Loaded
+    /// ONCE by the caller (`main.rs`, via `FastEmbed::new()`) and shared from
+    /// then on — `FastEmbed::new()` loads ~417MB of ONNX model, so constructing
+    /// it per request would make every search take seconds and reload the model
+    /// every time. `dyn` (not a concrete `FastEmbed`) so tests can inject a
+    /// cheap stub instead of downloading the real model.
+    pub embedder: Arc<dyn EmbeddingProvider>,
 }
 
 impl AppState {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: PgPool, embedder: Arc<dyn EmbeddingProvider>) -> Self {
         Self {
             pool,
             hubs: Arc::new(Mutex::new(HashMap::new())),
+            embedder,
         }
+    }
+
+    /// Test-only constructor: same `AppState` shape, but wired to
+    /// [`StubEmbedder`] instead of the real `FastEmbed`. Nothing under test
+    /// exercises embedding *quality* — `quick_find`, `related_pages`, and the
+    /// SQL in `hybrid` are what's under test — so a fixed 768-dim vector is
+    /// sufficient and keeps `cargo test` from downloading/loading the 417MB
+    /// ONNX model.
+    pub fn new_for_test(pool: PgPool) -> Self {
+        Self::new(pool, Arc::new(StubEmbedder))
     }
 
     /// Attach a session to `page_id`'s hub, creating it from the log if this is
@@ -132,4 +151,25 @@ pub enum HubError {
     Load(#[from] sqlx::Error),
     #[error("corrupt doc log: {0}")]
     Corrupt(String),
+}
+
+/// Cheap stand-in for `FastEmbed` used ONLY by [`AppState::new_for_test`].
+/// Returns a fixed, non-zero `EMBEDDING_DIMS`-length vector for every input —
+/// enough for `hybrid`'s SQL to run (it needs a vector of the right shape), but
+/// never loads or downloads the real ONNX model.
+struct StubEmbedder;
+
+#[async_trait::async_trait]
+impl EmbeddingProvider for StubEmbedder {
+    fn dimensions(&self) -> usize {
+        EMBEDDING_DIMS
+    }
+
+    fn model_id(&self) -> &str {
+        "stub"
+    }
+
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
+        Ok(texts.iter().map(|_| vec![0.1_f32; EMBEDDING_DIMS]).collect())
+    }
 }

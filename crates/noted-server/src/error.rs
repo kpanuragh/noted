@@ -14,6 +14,8 @@ pub enum AppError {
     InvalidReference,
     #[error("the document log could not be replayed")]
     CorruptDoc,
+    #[error("failed to embed search query")]
+    Embed,
 }
 
 impl IntoResponse for AppError {
@@ -24,6 +26,7 @@ impl IntoResponse for AppError {
             AppError::PgvectorTooOld { .. } => StatusCode::SERVICE_UNAVAILABLE,
             AppError::InvalidReference => StatusCode::BAD_REQUEST,
             AppError::CorruptDoc => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::Embed => StatusCode::INTERNAL_SERVER_ERROR,
         };
         // Never leak SQL detail to clients; log it instead.
         if let AppError::Db(ref e) = self {

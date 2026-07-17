@@ -1995,6 +1995,7 @@ name = "noted-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "futures-util",
  "noted-crdt",

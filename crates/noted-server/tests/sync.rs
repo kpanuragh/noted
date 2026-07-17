@@ -162,7 +162,7 @@ async fn websocket_session_persists_an_update() {
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let app = noted_server::app(AppState::new(pool.clone()));
+    let app = noted_server::app(AppState::new_for_test(pool.clone()));
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
@@ -220,7 +220,7 @@ async fn websocket_session_persists_an_update() {
 #[tokio::test]
 async fn two_sessions_on_one_page_share_a_document() {
     let (pool, page_id) = setup().await;
-    let state = AppState::new(pool.clone());
+    let state = AppState::new_for_test(pool.clone());
     let addr = serve(noted_server::app(state.clone())).await;
 
     // Both tabs connect BEFORE any edit, so the only way B can learn about
@@ -300,7 +300,7 @@ async fn reproject_repairs_a_corrupted_projection() {
     use tower::ServiceExt;
 
     let (pool, page_id) = setup().await;
-    let addr = serve(noted_server::app(AppState::new(pool.clone()))).await;
+    let addr = serve(noted_server::app(AppState::new_for_test(pool.clone()))).await;
 
     // Drive a real update through the real sync path so `blocks` is populated
     // the way production populates it.
@@ -341,7 +341,7 @@ async fn reproject_repairs_a_corrupted_projection() {
     );
 
     // Repair.
-    let res = noted_server::app(AppState::new(pool.clone()))
+    let res = noted_server::app(AppState::new_for_test(pool.clone()))
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -381,7 +381,7 @@ async fn reproject_unknown_page_returns_404() {
     use tower::ServiceExt;
 
     let (pool, _page_id) = setup().await;
-    let res = noted_server::app(AppState::new(pool))
+    let res = noted_server::app(AppState::new_for_test(pool))
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -409,7 +409,7 @@ async fn reproject_unknown_page_returns_404() {
 #[tokio::test]
 async fn a_failed_append_does_not_mutate_the_shared_doc() {
     let (pool, page_id) = setup().await;
-    let state = AppState::new(pool.clone());
+    let state = AppState::new_for_test(pool.clone());
     let addr = serve(noted_server::app(state.clone())).await;
 
     // A second session keeps the hub (and its doc) alive after the writer's
