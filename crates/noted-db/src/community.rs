@@ -304,6 +304,20 @@ pub async fn bump_churn(
 /// `$1` is the workspace id, in every query that splices this. Callers must
 /// bind it first and must not renumber it.
 ///
+/// # Columns
+///
+/// `source_entity`, `target_entity`, `weight`, `source_chunk_hash`. The last was
+/// added for M2c's local search, whose FIRST step is "which entities does a seed
+/// CHUNK anchor" — a question that needs the provenance hash and cannot be
+/// answered from the endpoint pair alone. The alternative considered and
+/// rejected was to join `edges` directly for that one step and test the pair
+/// against `clusterable_edges` with an `EXISTS`: that would have let an ARCHIVED
+/// page's chunk seed the traversal whenever some *other*, live chunk happened to
+/// connect the same two entities — a second, weaker definition of live, which is
+/// the exact bug class this macro exists to prevent. Adding a column is safe
+/// because every consumer selects named columns (no `SELECT *`, no `UNION` over
+/// the CTE), so the extra column is invisible to the five existing ones.
+///
 /// Note it does NOT filter on `model_id`: a workspace's graph is the UNION of
 /// what every extraction model contributed, because `entities` carries no
 /// model and the two models' edges genuinely describe the same nodes. Running
@@ -323,7 +337,7 @@ macro_rules! clusterable_edges_cte {
     () => {
         "
     clusterable_edges AS (
-        SELECT e.source_entity, e.target_entity, e.weight
+        SELECT e.source_entity, e.target_entity, e.weight, e.source_chunk_hash
         FROM edges e
         WHERE e.workspace_id = $1
           AND EXISTS (

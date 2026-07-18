@@ -16,6 +16,7 @@ pub mod chunks;
 pub mod community;
 pub mod docs;
 pub mod graph;
+pub mod graph_search;
 pub mod pages;
 pub mod search;
 pub mod stats;
