@@ -40,7 +40,7 @@ async fn projecting_a_page_materialises_chunks() {
         .unwrap();
     assert!(n >= 1, "a projected page must yield chunks");
 
-    let pending = noted_db::chunks::pending(&pool, "any-model", 100)
+    let pending = noted_db::chunks::pending(&pool, "any-model", None, 100)
         .await
         .unwrap();
     assert!(

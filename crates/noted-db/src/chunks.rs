@@ -1,5 +1,6 @@
 use pgvector::Vector;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct PendingChunk {
@@ -74,9 +75,21 @@ pub async fn set_page_chunks(
 /// "in progress" state to leak. A worker killed mid-batch simply leaves those
 /// hashes unembedded, and the next poll returns them. It is idempotent and
 /// self-healing — a reproject + rechunk immediately shows up as new work.
+/// THE EMBEDDING WORK QUEUE. Not a table — a set difference, mirroring
+/// `graph::pending_extraction`.
+///
+/// `workspace_id: None` drains the whole instance — what the CLI wants.
+/// `Some(id)` scopes the queue to chunks referenced by a live page in that
+/// one workspace — required so a per-tenant embedding run (or a test on a
+/// shared dev database) does not pull in every OTHER workspace's pending
+/// chunks too. Mirrors `progress`'s (and `graph::pending_extraction`'s)
+/// `$3::uuid IS NULL OR p.workspace_id = $3` scoping exactly, joining through
+/// `pages` the same way. Keeps the query string `'static` (bind, never
+/// interpolate).
 pub async fn pending(
     pool: &PgPool,
     model_id: &str,
+    workspace_id: Option<Uuid>,
     limit: i64,
 ) -> Result<Vec<PendingChunk>, sqlx::Error> {
     // ORDER BY is for DETERMINISM, not starvation: `LIMIT` without it lets
@@ -87,15 +100,18 @@ pub async fn pending(
     sqlx::query_as::<_, PendingChunk>(
         "SELECT DISTINCT c.content_hash, c.text
          FROM page_chunks pc
+         JOIN pages p ON p.id = pc.page_id
          JOIN chunks c ON c.content_hash = pc.content_hash
          LEFT JOIN embeddings e
            ON e.content_hash = c.content_hash AND e.model_id = $1
          WHERE e.content_hash IS NULL
+           AND ($3::uuid IS NULL OR p.workspace_id = $3)
          ORDER BY c.content_hash
          LIMIT $2",
     )
     .bind(model_id)
     .bind(limit)
+    .bind(workspace_id)
     .fetch_all(pool)
     .await
 }

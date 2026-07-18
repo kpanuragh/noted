@@ -70,7 +70,7 @@ impl EmbeddingProvider for Poison {
     }
 }
 
-async fn setup() -> (noted_db::PgPool, uuid::Uuid) {
+async fn setup() -> (noted_db::PgPool, uuid::Uuid, uuid::Uuid) {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
     let pool = noted_db::connect(&url).await.unwrap();
@@ -86,7 +86,7 @@ async fn setup() -> (noted_db::PgPool, uuid::Uuid) {
             .fetch_one(&pool)
             .await
             .unwrap();
-    (pool, page)
+    (pool, ws, page)
 }
 
 /// Seed `n` live chunks on a page. Goes through `page_chunks` — NOT `blocks`,
@@ -110,7 +110,7 @@ async fn seed(pool: &noted_db::PgPool, page: uuid::Uuid, n: i32) {
 
 #[tokio::test]
 async fn a_dimension_mismatch_is_rejected_at_construction() {
-    let (pool, _) = setup().await;
+    let (pool, _, _) = setup().await;
     let err = Worker::new(pool, Arc::new(Fake::new(1024)))
         .err()
         .expect("must reject");
@@ -122,10 +122,10 @@ async fn a_dimension_mismatch_is_rejected_at_construction() {
 
 #[tokio::test]
 async fn drain_embeds_everything_then_stops() {
-    let (pool, page) = setup().await;
+    let (pool, ws, page) = setup().await;
     seed(&pool, page, 5).await;
     let fake = Arc::new(Fake::new(EMBEDDING_DIMS));
-    let w = Worker::new(pool.clone(), fake.clone()).unwrap();
+    let w = Worker::new_scoped(pool.clone(), fake.clone(), ws).unwrap();
 
     let n = w.drain().await.unwrap();
     assert!(n >= 5, "drain must embed all pending chunks, got {n}");
@@ -140,17 +140,26 @@ async fn drain_embeds_everything_then_stops() {
 /// re-index" property.
 #[tokio::test]
 async fn after_drain_every_live_chunk_is_embedded() {
-    let (pool, page) = setup().await;
+    let (pool, ws, page) = setup().await;
     seed(&pool, page, 4).await;
-    let w = Worker::new(pool.clone(), Arc::new(Fake::new(EMBEDDING_DIMS))).unwrap();
+    let w = Worker::new_scoped(pool.clone(), Arc::new(Fake::new(EMBEDDING_DIMS)), ws).unwrap();
     w.drain().await.unwrap();
 
+    // Scoped to `ws` (via the `pages` join) so this reads only THIS test's
+    // own fixture, not every live chunk any other test in this binary has
+    // ever created under the shared `fake-worker` model_id.
     let remaining: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM (SELECT DISTINCT content_hash FROM page_chunks) pc
+        "SELECT count(*) FROM (
+             SELECT DISTINCT pc.content_hash
+             FROM page_chunks pc
+             JOIN pages p ON p.id = pc.page_id
+             WHERE p.workspace_id = $1
+         ) pc
          LEFT JOIN embeddings e
            ON e.content_hash = pc.content_hash AND e.model_id = 'fake-worker'
          WHERE e.content_hash IS NULL",
     )
+    .bind(ws)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -159,7 +168,7 @@ async fn after_drain_every_live_chunk_is_embedded() {
         "no live chunk may remain unembedded after drain"
     );
 
-    let (embedded, total) = noted_db::chunks::progress(&pool, "fake-worker", None)
+    let (embedded, total) = noted_db::chunks::progress(&pool, "fake-worker", Some(ws))
         .await
         .unwrap();
     assert_eq!(
@@ -183,11 +192,11 @@ async fn after_drain_every_live_chunk_is_embedded() {
 /// `drain_embeds_everything_then_stops` under a different name.
 #[tokio::test]
 async fn interrupted_work_resumes_without_duplication() {
-    let (pool, page) = setup().await;
+    let (pool, ws, page) = setup().await;
     let total_seeded = BATCH_SIZE + 20;
     seed(&pool, page, total_seeded as i32).await;
     let fake = Arc::new(Fake::new(EMBEDDING_DIMS));
-    let w = Worker::new(pool.clone(), fake.clone()).unwrap();
+    let w = Worker::new_scoped(pool.clone(), fake.clone(), ws).unwrap();
 
     // Simulate a crash after one batch by only running once.
     let first = w.run_once().await.unwrap();
@@ -205,7 +214,7 @@ async fn interrupted_work_resumes_without_duplication() {
     // A "new worker" (same queue, same underlying provider/counter — standing
     // in for a fresh process that shares nothing but the database) finishes
     // the job.
-    let w2 = Worker::new(pool.clone(), fake.clone()).unwrap();
+    let w2 = Worker::new_scoped(pool.clone(), fake.clone(), ws).unwrap();
     w2.drain().await.unwrap();
 
     // THE assertion: total texts ever sent to the provider must equal exactly
@@ -223,7 +232,7 @@ async fn interrupted_work_resumes_without_duplication() {
         "resuming must embed each chunk exactly once, never re-embedding the first batch"
     );
 
-    let (embedded, all) = noted_db::chunks::progress(&pool, "fake-worker", None)
+    let (embedded, all) = noted_db::chunks::progress(&pool, "fake-worker", Some(ws))
         .await
         .unwrap();
     assert_eq!(embedded, all, "progress must reach 100% after resuming");
@@ -248,7 +257,7 @@ async fn interrupted_work_resumes_without_duplication() {
 /// until the harness kills it.
 #[tokio::test]
 async fn a_poison_chunk_does_not_block_its_neighbours_and_drain_terminates() {
-    let (pool, page) = setup().await;
+    let (pool, ws, page) = setup().await;
     let marker = uuid::Uuid::new_v4();
     let bad_text = format!("poison {marker} UNEMBEDDABLE");
 
@@ -273,12 +282,17 @@ async fn a_poison_chunk_does_not_block_its_neighbours_and_drain_terminates() {
         .unwrap();
 
     // A model_id nothing else uses, so this worker's embeddings are its own.
+    // That uniqueness alone is NOT enough to isolate the `pending()` poll,
+    // though: with a brand-new model_id, EVERY live chunk in the shared test
+    // database has no embedding under it, so an unscoped worker would treat
+    // every other test's fixture chunks as pending too. `new_scoped` to this
+    // test's own workspace is what actually isolates it.
     let model = format!("fake-poison-{}", uuid::Uuid::new_v4());
     let provider = Arc::new(Poison {
         bad: bad_text,
         model_id: model.clone(),
     });
-    let w = Worker::new(pool.clone(), provider).unwrap();
+    let w = Worker::new_scoped(pool.clone(), provider, ws).unwrap();
 
     let err = w.drain().await.expect_err(
         "a chunk that can never be embedded must surface as an error, not a clean exit",

@@ -83,7 +83,7 @@ async fn backfills_a_corpus_that_predates_the_pipeline() {
 
     // ...and nothing has been chunked, so the queue is empty and a drain-only CLI
     // would report success having done nothing.
-    let unchunked = noted_db::chunks::pending(&pool, "backfill-model", 1000)
+    let unchunked = noted_db::chunks::pending(&pool, "backfill-model", None, 1000)
         .await
         .unwrap();
     assert!(
@@ -111,7 +111,7 @@ async fn backfills_a_corpus_that_predates_the_pipeline() {
     );
 
     // The payoff: the queue now has this corpus's chunks in it.
-    let pending = noted_db::chunks::pending(&pool, "backfill-model", 1000)
+    let pending = noted_db::chunks::pending(&pool, "backfill-model", None, 1000)
         .await
         .unwrap();
     let mine: Vec<_> = pending
