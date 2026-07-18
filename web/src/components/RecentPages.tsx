@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
 import Link from "next/link";
-import { api, type Page } from "@/lib/api";
+import { api } from "@/lib/api";
+import { usePanelData } from "@/lib/usePanelData";
 import { formatRelativeTime } from "@/lib/time";
 import styles from "./dashboard.module.css";
 
@@ -23,31 +24,11 @@ export function RecentPages({
   workspaceId: string;
   limit?: number;
 }) {
-  const [pages, setPages] = useState<Page[] | null>(null);
-  const [failed, setFailed] = useState(false);
-  // Only used to re-trigger the effect on "Try again".
-  const [attempt, setAttempt] = useState(0);
-
-  const retry = useCallback(() => {
-    setFailed(false);
-    setPages(null);
-    setAttempt((n) => n + 1);
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .recentPages(workspaceId, limit)
-      .then((result) => {
-        if (!cancelled) setPages(result);
-      })
-      .catch(() => {
-        if (!cancelled) setFailed(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [workspaceId, limit, attempt]);
+  const load = useCallback(
+    () => api.recentPages(workspaceId, limit),
+    [workspaceId, limit],
+  );
+  const { state, retry } = usePanelData(load);
 
   return (
     <section className={styles.panel} aria-labelledby="recent-heading">
@@ -55,9 +36,12 @@ export function RecentPages({
         Recently edited
       </h2>
 
-      {failed ? (
+      {state.status === "failed" ? (
         <>
-          <p className={styles.error}>
+          {/* role="alert" so a screen reader is told the panel failed; without
+              it the error replaces the list silently and is only discoverable
+              by re-reading the region. */}
+          <p className={styles.error} role="alert">
             Couldn&apos;t load your recent pages. The workspace itself is fine — this
             panel just couldn&apos;t reach the server.
           </p>
@@ -65,16 +49,16 @@ export function RecentPages({
             Try again
           </button>
         </>
-      ) : pages === null ? (
+      ) : state.status === "loading" ? (
         <p className={styles.muted}>Loading…</p>
-      ) : pages.length === 0 ? (
+      ) : state.data.length === 0 ? (
         <p className={styles.empty}>
           Nothing here yet. Create your first page and it will show up here as you
           work.
         </p>
       ) : (
         <ul className={styles.list}>
-          {pages.map((page) => (
+          {state.data.map((page) => (
             <li key={page.id} className={styles.listItem}>
               <Link href={`/pages/${page.id}`} className={styles.pageLink}>
                 <span className={styles.pageTitle}>{page.title || "Untitled"}</span>

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { PageTree } from "@/components/PageTree";
 import { RecentPages } from "@/components/RecentPages";
 import { WorkspaceStatsPanel } from "@/components/WorkspaceStatsPanel";
+import { PanelBoundary } from "@/components/PanelBoundary";
 import { api } from "@/lib/api";
 import styles from "@/components/dashboard.module.css";
 
@@ -71,9 +72,16 @@ export default function Home() {
           </p>
         )}
 
+        {/* One boundary per panel, not one around both: a shared boundary
+            would let either panel's crash take out the other, which is the
+            blanking this is meant to stop. */}
         <div className={styles.panels}>
-          <RecentPages workspaceId={WORKSPACE_ID} />
-          <WorkspaceStatsPanel workspaceId={WORKSPACE_ID} />
+          <PanelBoundary title="Recently edited">
+            <RecentPages workspaceId={WORKSPACE_ID} />
+          </PanelBoundary>
+          <PanelBoundary title="Your knowledge base">
+            <WorkspaceStatsPanel workspaceId={WORKSPACE_ID} />
+          </PanelBoundary>
         </div>
       </div>
     </main>

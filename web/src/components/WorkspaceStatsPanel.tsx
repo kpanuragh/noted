@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
 import { api, type WorkspaceStats } from "@/lib/api";
+import { usePanelData } from "@/lib/usePanelData";
 import { formatCount } from "@/lib/time";
 import styles from "./dashboard.module.css";
 
@@ -16,30 +17,8 @@ import styles from "./dashboard.module.css";
  * rest of the dashboard intact.
  */
 export function WorkspaceStatsPanel({ workspaceId }: { workspaceId: string }) {
-  const [stats, setStats] = useState<WorkspaceStats | null>(null);
-  const [failed, setFailed] = useState(false);
-  const [attempt, setAttempt] = useState(0);
-
-  const retry = useCallback(() => {
-    setFailed(false);
-    setStats(null);
-    setAttempt((n) => n + 1);
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .workspaceStats(workspaceId)
-      .then((result) => {
-        if (!cancelled) setStats(result);
-      })
-      .catch(() => {
-        if (!cancelled) setFailed(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [workspaceId, attempt]);
+  const load = useCallback(() => api.workspaceStats(workspaceId), [workspaceId]);
+  const { state, retry } = usePanelData(load);
 
   return (
     <section className={styles.panel} aria-labelledby="stats-heading">
@@ -47,35 +26,38 @@ export function WorkspaceStatsPanel({ workspaceId }: { workspaceId: string }) {
         Your knowledge base
       </h2>
 
-      {failed ? (
+      {state.status === "failed" ? (
         <>
-          <p className={styles.error}>
+          {/* role="alert": see RecentPages. */}
+          <p className={styles.error} role="alert">
             Workspace insights are unavailable right now. Your pages are unaffected.
           </p>
           <button type="button" className={styles.retry} onClick={retry}>
             Try again
           </button>
         </>
-      ) : stats === null ? (
+      ) : state.status === "loading" ? (
         <p className={styles.muted}>Loading…</p>
       ) : (
         <>
-          <StatsHeadline stats={stats} />
+          <StatsHeadline stats={state.data} />
           <div className={styles.statRow}>
             <span className={styles.statLabel}>Pages</span>
-            <span className={styles.statValue}>{formatCount(stats.pages)}</span>
+            <span className={styles.statValue}>{formatCount(state.data.pages)}</span>
           </div>
           <div className={styles.statRow}>
             <span className={styles.statLabel}>Passages searchable</span>
-            <span className={styles.statValue}>{formatCount(stats.chunks_indexed)}</span>
+            <span className={styles.statValue}>
+              {formatCount(state.data.chunks_indexed)}
+            </span>
           </div>
           <div className={styles.statRow}>
             <span className={styles.statLabel}>Things noted knows about</span>
-            <span className={styles.statValue}>{formatCount(stats.entities)}</span>
+            <span className={styles.statValue}>{formatCount(state.data.entities)}</span>
           </div>
           <div className={styles.statRow}>
             <span className={styles.statLabel}>Connections between them</span>
-            <span className={styles.statValue}>{formatCount(stats.edges)}</span>
+            <span className={styles.statValue}>{formatCount(state.data.edges)}</span>
           </div>
         </>
       )}

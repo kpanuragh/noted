@@ -23,10 +23,14 @@ async function stubApi(
       await route.fulfill({ status: stub.status, body: "" });
       return;
     }
+    // `"body" in stub` rather than `stub.body ?? []`, so a stub can serve a
+    // literal `null` body — one of the malformed shapes under test, which
+    // `??` would silently rewrite into a valid empty list.
+    const body = "body" in stub ? stub.body : [];
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(stub.body ?? []),
+      body: JSON.stringify(body),
     });
   };
 
@@ -155,6 +159,90 @@ test("retry re-requests a panel that failed", async ({ page }) => {
   await expect(page.getByText(/insights are unavailable/i)).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Your knowledge base" })).toContainText("3");
   expect(calls).toBe(2);
+});
+
+/**
+ * Malformed 200s — API version skew.
+ *
+ * These are the case the per-panel `.catch()` could not cover. A 200 with a
+ * wrong-shaped body used to pass the fetch layer's `as T` cast untouched and
+ * throw during render, and React unmounts the whole tree on an uncaught render
+ * error, so a single skewed endpoint blanked the entire dashboard. Each test
+ * below asserts the *other* panel and the quick actions survived, because
+ * "shows an error" is only half the contract — the other half is that the
+ * failure stayed inside one panel.
+ */
+test("a wrong-shaped 200 degrades one panel instead of blanking the dashboard", async ({
+  page,
+}) => {
+  // An object where the client expects a list: what a "wrap the response in an
+  // envelope" backend change looks like from here.
+  await stubApi(page, {
+    recent: { body: { pages: [], total: 0 } },
+    stats: { body: { pages: 3, chunks_indexed: 40, entities: 412, edges: 1204 } },
+  });
+
+  await page.goto("/");
+
+  // Order matters. The panel error only appears once the bad response has been
+  // received and handled, so waiting for it first guarantees everything below
+  // is observed AFTER the moment the page used to blank. Asserting the heading
+  // first passed vacuously against the unfixed code: it was still true during
+  // the brief window before the fetch resolved and the render threw.
+  const recentError = page.getByText(/Couldn't load your recent pages/i);
+  await expect(recentError).toBeVisible();
+  // ...and the failure is announced, not just shown.
+  await expect(recentError).toHaveAttribute("role", "alert");
+
+  // Only now: the page itself survived the malformed payload.
+  await expect(page.getByRole("heading", { name: "Your workspace" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New page" })).toBeVisible();
+
+  // The good panel is unaffected.
+  await expect(page.getByRole("region", { name: "Your knowledge base" })).toContainText(
+    "1,204",
+  );
+});
+
+test("a 200 with a null body shows an error instead of loading forever", async ({
+  page,
+}) => {
+  // `null` used to be both the not-loaded sentinel and a decodable body, so
+  // this hung on "Loading…" with nothing to retry.
+  await stubApi(page, {
+    recent: { body: [page_("p-2", "Still fine", new Date().toISOString())] },
+    stats: { body: null },
+  });
+
+  await page.goto("/");
+
+  const stats = page.getByRole("region", { name: "Your knowledge base" });
+  const statsError = page.getByText(/insights are unavailable/i);
+  await expect(statsError).toBeVisible();
+  await expect(statsError).toHaveAttribute("role", "alert");
+  await expect(stats).not.toContainText("Loading");
+  // Recoverable, unlike the hang it replaces.
+  await expect(stats.getByRole("button", { name: "Try again" })).toBeVisible();
+
+  await expect(page.getByText("Still fine")).toBeVisible();
+});
+
+test("a list of wrong-shaped elements degrades only its own panel", async ({ page }) => {
+  // Individually plausible objects missing the fields the UI reads: the panel
+  // would otherwise render "unknown" times and empty titles rather than fail.
+  await stubApi(page, {
+    recent: { body: [{ id: "p-1", name: "wrong field names" }] },
+    stats: { body: { pages: 3, chunks_indexed: 40, entities: 412, edges: 1204 } },
+  });
+
+  await page.goto("/");
+
+  // Settle on the failure first — see the ordering note above.
+  await expect(page.getByText(/Couldn't load your recent pages/i)).toBeVisible();
+  await expect(page.getByRole("region", { name: "Your knowledge base" })).toContainText(
+    "412",
+  );
+  await expect(page.getByRole("heading", { name: "Your workspace" })).toBeVisible();
 });
 
 // Integration: real backend, no stubs. Skipped when the API is not up, because
