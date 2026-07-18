@@ -1,6 +1,6 @@
 use noted_db::chunks;
 
-async fn setup() -> (noted_db::PgPool, uuid::Uuid) {
+async fn setup() -> (noted_db::PgPool, uuid::Uuid, uuid::Uuid) {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
     let pool = noted_db::connect(&url).await.unwrap();
@@ -16,7 +16,7 @@ async fn setup() -> (noted_db::PgPool, uuid::Uuid) {
             .fetch_one(&pool)
             .await
             .unwrap();
-    (pool, page)
+    (pool, ws, page)
 }
 
 /// Add a live chunk to a page: the chunk row plus the page_chunks link.
@@ -38,13 +38,24 @@ async fn live_chunk(pool: &noted_db::PgPool, page: uuid::Uuid, hash: &str, text:
     chunks::set_page_chunks(pool, page, &all).await.unwrap();
 }
 
+/// A second page in an EXISTING workspace — for tests that need two pages
+/// sharing one workspace scope (as opposed to `setup()`, which always mints a
+/// fresh workspace of its own).
+async fn second_page(pool: &noted_db::PgPool, ws: uuid::Uuid) -> uuid::Uuid {
+    sqlx::query_scalar("INSERT INTO pages (workspace_id, title) VALUES ($1, 'p2') RETURNING id")
+        .bind(ws)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
 async fn pending_returns_hashes_with_no_embedding() {
-    let (pool, page) = setup().await;
+    let (pool, ws, page) = setup().await;
     let h = format!("hash-{}", uuid::Uuid::new_v4());
     live_chunk(&pool, page, &h, "some text").await;
 
-    let pending = chunks::pending(&pool, "m1", 100).await.unwrap();
+    let pending = chunks::pending(&pool, "m1", Some(ws), 100).await.unwrap();
     assert!(
         pending.iter().any(|c| c.content_hash == h),
         "un-embedded hash must be pending"
@@ -54,7 +65,7 @@ async fn pending_returns_hashes_with_no_embedding() {
         .await
         .unwrap();
 
-    let after = chunks::pending(&pool, "m1", 100).await.unwrap();
+    let after = chunks::pending(&pool, "m1", Some(ws), 100).await.unwrap();
     assert!(
         !after.iter().any(|c| c.content_hash == h),
         "embedded hash must not be pending"
@@ -64,14 +75,16 @@ async fn pending_returns_hashes_with_no_embedding() {
 /// The dirty set is per-model: embedding with one model must not satisfy another.
 #[tokio::test]
 async fn pending_is_scoped_to_the_model() {
-    let (pool, page) = setup().await;
+    let (pool, ws, page) = setup().await;
     let h = format!("hash-{}", uuid::Uuid::new_v4());
     live_chunk(&pool, page, &h, "t").await;
     chunks::store_embedding(&pool, &h, "model-a", &vec![0.1f32; 768])
         .await
         .unwrap();
 
-    let other = chunks::pending(&pool, "model-b", 100).await.unwrap();
+    let other = chunks::pending(&pool, "model-b", Some(ws), 100)
+        .await
+        .unwrap();
     assert!(
         other.iter().any(|c| c.content_hash == h),
         "a hash embedded with model-a must still be pending for model-b"
@@ -84,10 +97,15 @@ async fn pending_is_scoped_to_the_model() {
 /// not here, and content-addressing proper is tested there. What this proves is
 /// storage-layer behavior: `ON CONFLICT DO NOTHING` collapses duplicate chunk
 /// inserts, and `pending()`'s `DISTINCT` collapses a hash referenced by two pages.
+///
+/// Both pages live in the SAME workspace (via `second_page`, not a second
+/// `setup()`) so a workspace-scoped `pending()` call still sees both
+/// `page_chunks` links and genuinely exercises the `DISTINCT` collapse —
+/// scoping to just one page's workspace would trivially see only one link.
 #[tokio::test]
 async fn a_hash_referenced_by_two_pages_is_one_chunk_and_queued_once() {
-    let (pool, page_a) = setup().await;
-    let (_, page_b) = setup().await;
+    let (pool, ws, page_a) = setup().await;
+    let page_b = second_page(&pool, ws).await;
     let h = format!("shared-{}", uuid::Uuid::new_v4());
     live_chunk(&pool, page_a, &h, "shared").await;
     live_chunk(&pool, page_b, &h, "shared").await;
@@ -102,7 +120,9 @@ async fn a_hash_referenced_by_two_pages_is_one_chunk_and_queued_once() {
         "a hash referenced by two pages must produce exactly one chunk row"
     );
 
-    let pending = chunks::pending(&pool, "m1", 1000).await.unwrap();
+    let pending = chunks::pending(&pool, "m1", Some(ws), 1000)
+        .await
+        .unwrap();
     let times = pending.iter().filter(|c| c.content_hash == h).count();
     assert_eq!(
         times, 1,
@@ -115,11 +135,11 @@ async fn a_hash_referenced_by_two_pages_is_one_chunk_and_queued_once() {
 /// never reach 100%.
 #[tokio::test]
 async fn an_orphaned_chunk_is_not_pending() {
-    let (pool, page) = setup().await;
+    let (pool, ws, page) = setup().await;
     let h = format!("orphan-{}", uuid::Uuid::new_v4());
     live_chunk(&pool, page, &h, "will be orphaned").await;
     assert!(
-        chunks::pending(&pool, "m1", 1000)
+        chunks::pending(&pool, "m1", Some(ws), 1000)
             .await
             .unwrap()
             .iter()
@@ -129,7 +149,9 @@ async fn an_orphaned_chunk_is_not_pending() {
     // The page is edited away to nothing — the chunk row survives, the link does not.
     chunks::set_page_chunks(&pool, page, &[]).await.unwrap();
 
-    let pending = chunks::pending(&pool, "m1", 1000).await.unwrap();
+    let pending = chunks::pending(&pool, "m1", Some(ws), 1000)
+        .await
+        .unwrap();
     assert!(
         !pending.iter().any(|c| c.content_hash == h),
         "a chunk no page references must not be queued for embedding"
@@ -141,7 +163,7 @@ async fn an_orphaned_chunk_is_not_pending() {
 /// model keeps serving search while the new model backfills.
 #[tokio::test]
 async fn two_models_embeddings_coexist_for_one_chunk() {
-    let (pool, page) = setup().await;
+    let (pool, ws, page) = setup().await;
     let h = format!("coexist-{}", uuid::Uuid::new_v4());
     live_chunk(&pool, page, &h, "coexist text").await;
 
@@ -159,13 +181,17 @@ async fn two_models_embeddings_coexist_for_one_chunk() {
         .unwrap();
     assert_eq!(n, 2, "both models' embeddings must coexist for one chunk");
 
-    let pending_a = chunks::pending(&pool, "model-a", 1000).await.unwrap();
+    let pending_a = chunks::pending(&pool, "model-a", Some(ws), 1000)
+        .await
+        .unwrap();
     assert!(
         !pending_a.iter().any(|c| c.content_hash == h),
         "model-a is already embedded and must not be pending"
     );
 
-    let pending_c = chunks::pending(&pool, "model-c", 1000).await.unwrap();
+    let pending_c = chunks::pending(&pool, "model-c", Some(ws), 1000)
+        .await
+        .unwrap();
     assert!(
         pending_c.iter().any(|c| c.content_hash == h),
         "a third model with no embedding yet must be pending"
@@ -178,20 +204,14 @@ async fn two_models_embeddings_coexist_for_one_chunk() {
 /// binaries' chunks share the global `page_chunks` table).
 #[tokio::test]
 async fn progress_can_be_scoped_to_one_workspace() {
-    let (pool, page_a) = setup().await;
-    let (_, page_b) = setup().await;
+    let (pool, ws_a, page_a) = setup().await;
+    let (_, _ws_b, page_b) = setup().await;
     let model = format!("scope-model-{}", uuid::Uuid::new_v4());
 
     let h_a = format!("scope-a-{}", uuid::Uuid::new_v4());
     live_chunk(&pool, page_a, &h_a, "workspace a text").await;
     let h_b = format!("scope-b-{}", uuid::Uuid::new_v4());
     live_chunk(&pool, page_b, &h_b, "workspace b text").await;
-
-    let ws_a: uuid::Uuid = sqlx::query_scalar("SELECT workspace_id FROM pages WHERE id = $1")
-        .bind(page_a)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
 
     let (_, total_a) = chunks::progress(&pool, &model, Some(ws_a)).await.unwrap();
     assert_eq!(
@@ -209,7 +229,7 @@ async fn progress_can_be_scoped_to_one_workspace() {
 
 #[tokio::test]
 async fn upsert_is_idempotent() {
-    let (pool, _) = setup().await;
+    let (pool, _, _) = setup().await;
     let h = format!("idem-{}", uuid::Uuid::new_v4());
     chunks::upsert(&pool, &[(h.clone(), "a".into(), 1)])
         .await

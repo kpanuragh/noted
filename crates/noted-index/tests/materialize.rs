@@ -154,7 +154,7 @@ async fn rechunked_chunks_appear_in_the_work_queue() {
 
     rechunk_page(&pool, page).await.unwrap();
 
-    let pending = noted_db::chunks::pending(&pool, "test-model", 100)
+    let pending = noted_db::chunks::pending(&pool, "test-model", None, 100)
         .await
         .unwrap();
     assert!(

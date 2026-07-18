@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use noted_db::PgPool;
 use noted_db::chunks::PendingChunk;
+use uuid::Uuid;
 
 use crate::provider::{EmbedError, EmbeddingProvider, validate_dimensions, verify_batch};
 
@@ -55,6 +56,14 @@ pub enum WorkerError {
 pub struct Worker {
     pool: PgPool,
     provider: Arc<dyn EmbeddingProvider>,
+    /// Scopes `chunks::pending`'s poll. `None` (the default via `new`) drains
+    /// the whole instance — what the CLI wants. `Some(id)` (via
+    /// `new_scoped`) restricts the queue to chunks referenced by a live page
+    /// in that one workspace — needed so a per-tenant embedding run does not
+    /// also pick up every other workspace's pending chunks. Mirrors
+    /// `ExtractWorker`'s `workspace_id` field exactly. See
+    /// `noted_db::chunks::pending`.
+    workspace_id: Option<Uuid>,
 }
 
 impl Worker {
@@ -63,7 +72,28 @@ impl Worker {
     /// unindexable column.
     pub fn new(pool: PgPool, provider: Arc<dyn EmbeddingProvider>) -> Result<Self, EmbedError> {
         validate_dimensions(provider.as_ref())?;
-        Ok(Self { pool, provider })
+        Ok(Self {
+            pool,
+            provider,
+            workspace_id: None,
+        })
+    }
+
+    /// Workspace-scoped worker — polls only chunks referenced by a live page
+    /// in `workspace_id`. Use for per-tenant embedding runs and for tests on
+    /// a shared dev database, where an unscoped poll would also return every
+    /// other workspace's pending chunks.
+    pub fn new_scoped(
+        pool: PgPool,
+        provider: Arc<dyn EmbeddingProvider>,
+        workspace_id: Uuid,
+    ) -> Result<Self, EmbedError> {
+        validate_dimensions(provider.as_ref())?;
+        Ok(Self {
+            pool,
+            provider,
+            workspace_id: Some(workspace_id),
+        })
     }
 
     /// Embed `texts`, checking the provider's output before it can reach a `zip`.
@@ -138,7 +168,9 @@ impl Worker {
     /// would just lose work.
     pub async fn run_once(&self) -> Result<BatchOutcome, WorkerError> {
         let model_id = self.provider.model_id().to_string();
-        let batch = noted_db::chunks::pending(&self.pool, &model_id, BATCH_SIZE).await?;
+        let batch =
+            noted_db::chunks::pending(&self.pool, &model_id, self.workspace_id, BATCH_SIZE)
+                .await?;
         if batch.is_empty() {
             return Ok(BatchOutcome::Embedded(0));
         }

@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use noted_index::extract::{ExtractionProvider, StubExtractor};
+use noted_index::extract_worker::ExtractWorker;
 use noted_index::provider::{EmbeddingProvider, FastEmbed};
 use noted_index::worker::Worker;
 
@@ -61,5 +63,56 @@ async fn main() -> anyhow::Result<()> {
 
     let (done, total) = noted_db::chunks::progress(&pool, &model_id, None).await?;
     tracing::info!(embedded_this_run = n, embedded = done, total, "done");
+
+    // Extraction pass. There is no real (LLM-backed) `ExtractionProvider`
+    // wired into this CLI yet — `extract_providers::OllamaExtractor` exists
+    // behind the `extract-ollama` feature, but this binary is not built with
+    // it, and even if it were, there is no Ollama server to point it at in
+    // most environments this CLI runs in. Rather than either (a) silently
+    // skipping extraction with no explanation, which would look like a
+    // working pipeline that just never touches the graph, or (b) defaulting
+    // to `StubExtractor` — a deterministic, fake extractor meant for
+    // tests — and quietly writing made-up graph data into a real instance,
+    // extraction only runs when explicitly opted into via `NOTED_EXTRACT=stub`.
+    // Any other provider wiring (Ollama, etc.) is a future CLI flag, not a
+    // silent default.
+    match std::env::var("NOTED_EXTRACT").ok().as_deref() {
+        Some("stub") => {
+            tracing::warn!(
+                "NOTED_EXTRACT=stub: using the deterministic StubExtractor, NOT a real \
+                 extraction model. This is for local testing of the extraction pipeline only \
+                 — do not rely on it for real graph data."
+            );
+            let extract_provider = Arc::new(StubExtractor::new());
+            let extract_model_id = extract_provider.model_id().to_string();
+            let extract_worker = ExtractWorker::new(pool.clone(), extract_provider);
+
+            let (extracted_before, extract_total) =
+                noted_db::graph::extraction_progress(&pool, &extract_model_id, None).await?;
+            tracing::info!(extracted = extracted_before, total = extract_total, "extraction starting");
+
+            match extract_worker.drain().await {
+                Ok(n) => {
+                    let (extracted, total) =
+                        noted_db::graph::extraction_progress(&pool, &extract_model_id, None).await?;
+                    tracing::info!(extracted_this_run = n, extracted, total, "extraction done");
+                }
+                // A stalled/failed extraction drain must not take down the
+                // whole CLI run — embeddings already succeeded above, and that
+                // work must not be thrown away because the graph pass hit a
+                // poison chunk or (for a real provider) an unreachable model.
+                Err(e) => {
+                    tracing::warn!(error = %e, "extraction did not complete; embeddings above are unaffected");
+                }
+            }
+        }
+        _ => {
+            tracing::info!(
+                "no extraction provider configured (set NOTED_EXTRACT=stub to run the \
+                 deterministic stub extractor for local testing); skipping the extraction pass"
+            );
+        }
+    }
+
     Ok(())
 }
