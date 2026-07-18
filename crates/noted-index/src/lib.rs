@@ -18,6 +18,18 @@ pub mod louvain;
 // client, so it stays unconditional rather than feature-gated.
 pub mod community_worker;
 
+// The community summariser: the `SummaryProvider` trait + a deterministic
+// stub. Pure logic (no db, no network), exactly like `extract` above, so no
+// feature gate. A real LLM-backed summariser would be a separate, gated
+// module — see this one's header for the non-negotiable it must carry.
+pub mod summary;
+
+// The summary worker: the set-difference queue over `communities` vs
+// `community_summaries`, and lazy invalidation by `member_set_hash`. Needs
+// `noted-db` and `summary`, neither of which drags in `embed`'s ONNX weight
+// or an HTTP client, so it stays unconditional like `extract_worker`.
+pub mod summary_worker;
+
 // Bridges `extract::Extraction` (name-based, as an extractor emits it) to
 // `noted_db::graph`'s id-based primitive writes. Pure db + logic, no
 // network — unconditional like `extract` above.
