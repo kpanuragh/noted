@@ -5,6 +5,20 @@ export type Page = {
   workspace_id: string;
   parent_id: string | null;
   title: string;
+  /** RFC 3339 timestamp, as returned by the `pages` table's COLS. */
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * The four numbers behind the dashboard's headline: how much of the workspace
+ * has actually made it into the retrieval index and the knowledge graph.
+ */
+export type WorkspaceStats = {
+  pages: number;
+  chunks_indexed: number;
+  entities: number;
+  edges: number;
 };
 
 export type QuickHit = {
@@ -38,6 +52,22 @@ export const api = {
     url.searchParams.set("workspace_id", workspaceId);
     if (parentId) url.searchParams.set("parent_id", parentId);
     return json<Page[]>(await fetch(url.toString()));
+  },
+
+  /**
+   * Pages ordered by true last-edit time, newest first. Distinct from
+   * `listPages`, which is the hierarchical tree ordered by `created_at`.
+   */
+  async recentPages(workspaceId: string, limit?: number): Promise<Page[]> {
+    const url = new URL("/api/pages/recent", API_BASE);
+    url.searchParams.set("workspace_id", workspaceId);
+    if (limit !== undefined) url.searchParams.set("limit", String(limit));
+    return json<Page[]>(await fetch(url.toString()));
+  },
+
+  async workspaceStats(workspaceId: string): Promise<WorkspaceStats> {
+    const url = new URL(`/api/workspaces/${workspaceId}/stats`, API_BASE);
+    return json<WorkspaceStats>(await fetch(url.toString()));
   },
 
   async getPage(id: string): Promise<Page> {
