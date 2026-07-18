@@ -77,7 +77,7 @@ async fn resolve_entity_is_idempotent_by_normalised_name() {
 }
 
 #[tokio::test]
-async fn replace_chunk_edges_marks_extracted_and_is_scoped() {
+async fn replace_chunk_edges_writes_edges_but_does_not_mark_extracted() {
     let (pool, ws, page) = setup().await;
     let model = format!("model-{}", uuid::Uuid::new_v4());
     let h = format!("hash-{}", uuid::Uuid::new_v4());
@@ -111,6 +111,11 @@ async fn replace_chunk_edges_marks_extracted_and_is_scoped() {
     .unwrap();
     assert_eq!(n, 2, "both edges must be written");
 
+    // The marker is now a SEPARATE call (`mark_extracted`) — see its doc
+    // comment. `replace_chunk_edges` alone must not set it: a chunk shared
+    // across workspaces needs every referencing workspace's edges written
+    // before it is truly "done", and the marker has no workspace column to
+    // make that partial.
     let extracted: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM chunk_extractions WHERE content_hash = $1 AND model_id = $2",
     )
@@ -119,14 +124,86 @@ async fn replace_chunk_edges_marks_extracted_and_is_scoped() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(extracted, 1, "the chunk_extractions marker must be set");
+    assert_eq!(
+        extracted, 0,
+        "replace_chunk_edges alone must not set the chunk_extractions marker"
+    );
 
-    let pending = graph::pending_extraction(&pool, &model, 1_000_000)
+    let pending = graph::pending_extraction(&pool, &model, Some(ws), 1_000_000)
         .await
         .unwrap();
     assert!(
-        !pending.iter().any(|(hash, _)| hash == &h),
-        "an extracted chunk must not still be pending"
+        pending.iter().any(|(hash, _)| hash == &h),
+        "a chunk must stay pending until mark_extracted is called explicitly"
+    );
+
+    graph::mark_extracted(&pool, &h, &model).await.unwrap();
+
+    let extracted_after: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chunk_extractions WHERE content_hash = $1 AND model_id = $2",
+    )
+    .bind(&h)
+    .bind(&model)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(extracted_after, 1, "mark_extracted must set the marker");
+
+    let pending_after = graph::pending_extraction(&pool, &model, Some(ws), 1_000_000)
+        .await
+        .unwrap();
+    assert!(
+        !pending_after.iter().any(|(hash, _)| hash == &h),
+        "after mark_extracted, the chunk must not still be pending"
+    );
+}
+
+#[tokio::test]
+async fn mark_extracted_is_idempotent() {
+    let (pool, _ws, page) = setup().await;
+    let model = format!("model-{}", uuid::Uuid::new_v4());
+    let h = format!("hash-{}", uuid::Uuid::new_v4());
+    live_chunk(&pool, page, &h, "idempotent marker text").await;
+
+    graph::mark_extracted(&pool, &h, &model).await.unwrap();
+    graph::mark_extracted(&pool, &h, &model).await.unwrap();
+
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chunk_extractions WHERE content_hash = $1 AND model_id = $2",
+    )
+    .bind(&h)
+    .bind(&model)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1, "calling mark_extracted twice must not double-insert");
+}
+
+#[tokio::test]
+async fn workspaces_for_chunk_finds_every_workspace_referencing_it() {
+    let (pool, ws1, page1) = setup().await;
+    let (_, ws2, page2) = setup().await;
+    let h = format!("hash-{}", uuid::Uuid::new_v4());
+
+    // Same content hash referenced by live pages in two different
+    // workspaces — simulating byte-identical text shared across tenants.
+    noted_db::chunks::upsert(&pool, &[(h.clone(), "shared text".to_string(), 10)])
+        .await
+        .unwrap();
+    noted_db::chunks::set_page_chunks(&pool, page1, &[h.clone()])
+        .await
+        .unwrap();
+    noted_db::chunks::set_page_chunks(&pool, page2, &[h.clone()])
+        .await
+        .unwrap();
+
+    let mut found = graph::workspaces_for_chunk(&pool, &h).await.unwrap();
+    found.sort();
+    let mut expected = vec![ws1, ws2];
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "workspaces_for_chunk must return every workspace whose live page references the chunk"
     );
 }
 
@@ -190,7 +267,7 @@ async fn pending_extraction_returns_live_chunks_with_no_extraction() {
     let h = format!("hash-{}", uuid::Uuid::new_v4());
     live_chunk(&pool, page, &h, "some extractable text").await;
 
-    let pending = graph::pending_extraction(&pool, &model_a, 1_000_000)
+    let pending = graph::pending_extraction(&pool, &model_a, Some(ws), 1_000_000)
         .await
         .unwrap();
     assert!(
@@ -201,8 +278,9 @@ async fn pending_extraction_returns_live_chunks_with_no_extraction() {
     graph::replace_chunk_edges(&pool, ws, &h, &model_a, &[])
         .await
         .unwrap();
+    graph::mark_extracted(&pool, &h, &model_a).await.unwrap();
 
-    let after = graph::pending_extraction(&pool, &model_a, 1_000_000)
+    let after = graph::pending_extraction(&pool, &model_a, Some(ws), 1_000_000)
         .await
         .unwrap();
     assert!(
@@ -210,7 +288,7 @@ async fn pending_extraction_returns_live_chunks_with_no_extraction() {
         "after extraction, the chunk must not be pending for that model"
     );
 
-    let other_model = graph::pending_extraction(&pool, &model_b, 1_000_000)
+    let other_model = graph::pending_extraction(&pool, &model_b, Some(ws), 1_000_000)
         .await
         .unwrap();
     assert!(

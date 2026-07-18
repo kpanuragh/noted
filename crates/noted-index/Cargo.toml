@@ -10,6 +10,12 @@ default = []
 # that `noted-server` — which only calls `materialize::rechunk_page` — does not
 # link an inference stack it never uses. The `noted-index` binary requires it.
 embed = ["dep:fastembed"]
+# Pulls in an HTTP client for `extract_providers::OllamaExtractor`, a real
+# (LLM-backed) `ExtractionProvider` that talks to a local Ollama server.
+# Default-off for the same reason `embed` is: not every consumer wants the
+# dependency, and there is no Ollama server in every environment (there is
+# none in CI/dev here) to talk to.
+extract-ollama = ["dep:reqwest", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 sha2 = "0.10"
@@ -22,6 +28,9 @@ sqlx.workspace = true
 anyhow.workspace = true
 tracing-subscriber = "0.3"
 fastembed = { version = "5.17", optional = true }
+reqwest = { version = "0.12", features = ["json"], optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 # Unconditional (not gated behind `embed`): `extract.rs`'s `ExtractionProvider`
 # trait is pure logic with no db/network dependency, so it — and this macro —
 # must compile under a plain `cargo test`, not just with `--features embed`.

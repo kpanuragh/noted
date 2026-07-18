@@ -41,13 +41,14 @@ pub async fn resolve_entity(
     .await
 }
 
-/// Replace one chunk's extracted edges for one model, and mark it extracted.
+/// Replace one chunk's extracted edges for one model, IN ONE WORKSPACE.
 ///
-/// Runs in ONE transaction: DELETE the chunk's existing edges for this model
-/// **within `workspace_id`**, insert the new set, then mark
-/// `chunk_extractions`. A crash mid-write rolls the whole thing back, so a
-/// chunk is always either fully extracted (new edges + marker, old edges
-/// gone) or untouched (still pending) — never half.
+/// Does NOT write the `chunk_extractions` marker — see `mark_extracted`'s
+/// doc comment for why that is now a separate call. Runs in ONE transaction:
+/// DELETE the chunk's existing edges for this model **within
+/// `workspace_id`**, then insert the new set. A crash mid-write rolls the
+/// whole thing back, so this workspace's edges for this chunk are always
+/// either fully replaced or untouched — never half.
 ///
 /// The DELETE is scoped by `workspace_id` as well as `(source_chunk_hash,
 /// model_id)`. This matters because `source_chunk_hash` is a GLOBAL,
@@ -130,16 +131,67 @@ pub async fn replace_chunk_edges(
         .await?;
     }
 
+    tx.commit().await
+}
+
+/// Mark a chunk extracted for `model_id` — the thing that removes it from
+/// `pending_extraction`.
+///
+/// Split out of `replace_chunk_edges` (which used to write this marker
+/// itself, transactionally, right after the edge insert) because of the
+/// workspace subtlety: `content_hash` is a GLOBAL, content-addressed key
+/// (M1b) that can be referenced by live pages in MULTIPLE workspaces, but
+/// `chunk_extractions` has no `workspace_id` column — the marker is
+/// necessarily all-or-nothing per chunk, not per workspace. If
+/// `replace_chunk_edges` still set it, the FIRST workspace to extract a
+/// shared chunk would remove it from the queue before the other workspaces
+/// referencing it ever got their own graph written, and a crash between
+/// workspaces would strand them unextracted forever with no way back into
+/// the queue.
+///
+/// The correct order (enforced by the caller, `noted-index`'s
+/// `ExtractWorker`): extract the chunk's text ONCE, call
+/// `replace_chunk_edges` once per workspace that references it, and only
+/// after ALL of those succeed, call `mark_extracted` ONCE. `ON CONFLICT DO
+/// NOTHING` keeps a second call (e.g. a retry after the marker already
+/// landed) a no-op rather than an error.
+pub async fn mark_extracted(
+    pool: &sqlx::PgPool,
+    content_hash: &str,
+    model_id: &str,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO chunk_extractions (content_hash, model_id) VALUES ($1, $2)
          ON CONFLICT DO NOTHING",
     )
-    .bind(chunk_hash)
+    .bind(content_hash)
     .bind(model_id)
-    .execute(&mut *tx)
+    .execute(pool)
     .await?;
+    Ok(())
+}
 
-    tx.commit().await
+/// Distinct workspaces whose LIVE pages currently reference `content_hash`.
+///
+/// A chunk is content-addressed and globally shared (M1b): two workspaces
+/// can each have a live page containing byte-identical text, and each such
+/// workspace needs its OWN copy of the extraction (entities/edges are scoped
+/// per-workspace — see `resolve_entity`'s docs). The extraction worker calls
+/// this once per pending chunk to fan its single `extract()` call out to
+/// every workspace that needs the result written.
+pub async fn workspaces_for_chunk(
+    pool: &sqlx::PgPool,
+    content_hash: &str,
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT p.workspace_id
+         FROM page_chunks pc
+         JOIN pages p ON p.id = pc.page_id
+         WHERE pc.content_hash = $1",
+    )
+    .bind(content_hash)
+    .fetch_all(pool)
+    .await
 }
 
 /// THE EXTRACTION WORK QUEUE. Not a table — a set difference, mirroring
@@ -147,23 +199,37 @@ pub async fn replace_chunk_edges(
 /// `page_chunks`, NOT `blocks` — see `chunks::pending`'s note on why those
 /// hash spaces never join) that has no `chunk_extractions` row for
 /// `model_id` yet.
+///
+/// `workspace_id: None` drains the whole instance — what the CLI wants, and
+/// what `chunks::pending` (its embedding sibling) does unconditionally.
+/// `Some(id)` scopes the queue to chunks referenced by a live page in that
+/// one workspace — required so a per-tenant extraction run (or a test on a
+/// shared dev database) does not pull in every OTHER workspace's pending
+/// chunks too. Mirrors `extraction_progress`'s `$2::uuid IS NULL OR
+/// p.workspace_id = $2` scoping exactly, joining through `pages` the same
+/// way. Keeps the query string `'static` (bind, never interpolate) and the
+/// existing `ORDER BY`/set-difference shape untouched.
 pub async fn pending_extraction(
     pool: &sqlx::PgPool,
     model_id: &str,
+    workspace_id: Option<Uuid>,
     limit: i64,
 ) -> Result<Vec<(String, String)>, sqlx::Error> {
     sqlx::query_as(
         "SELECT DISTINCT c.content_hash, c.text
          FROM page_chunks pc
+         JOIN pages p ON p.id = pc.page_id
          JOIN chunks c ON c.content_hash = pc.content_hash
          LEFT JOIN chunk_extractions ce
            ON ce.content_hash = c.content_hash AND ce.model_id = $1
          WHERE ce.content_hash IS NULL
+           AND ($3::uuid IS NULL OR p.workspace_id = $3)
          ORDER BY c.content_hash
          LIMIT $2",
     )
     .bind(model_id)
     .bind(limit)
+    .bind(workspace_id)
     .fetch_all(pool)
     .await
 }
