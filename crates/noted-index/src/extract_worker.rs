@@ -59,12 +59,27 @@ pub enum ExtractWorkerError {
 pub struct ExtractWorker {
     pool: sqlx::PgPool,
     provider: Arc<dyn ExtractionProvider>,
-    /// Scopes `pending_extraction`'s poll. `None` (the default via `new`)
-    /// drains the whole instance — what the CLI wants. `Some(id)` (via
-    /// `new_scoped`) restricts the queue to chunks
-    /// referenced by a live page in that one workspace — needed so a
-    /// per-tenant extraction run does not also pick up every other
-    /// workspace's pending chunks. See `noted_db::graph::pending_extraction`.
+    /// Scopes `pending_extraction`'s POLL — and only the poll. `None` (the
+    /// default via `new`) drains the whole instance, which is what the CLI
+    /// wants. `Some(id)` (via `new_scoped`) restricts the polled queue to
+    /// chunks referenced by a live page in that one workspace, so a per-tenant
+    /// run does not pull every other workspace's pending chunks into its
+    /// batches. See `noted_db::graph::pending_extraction`.
+    ///
+    /// IT DOES NOT SCOPE THE WRITE. Once a chunk is polled, `process_batch`
+    /// calls `graph::workspaces_for_chunk` UNSCOPED and applies the extraction
+    /// to EVERY workspace with a live page referencing that chunk — including
+    /// workspaces this worker is not scoped to — marking each one extracted.
+    /// A scoped run therefore does bounded work on other tenants' graphs
+    /// whenever a chunk is shared (content-addressed chunks are shared exactly
+    /// when two workspaces hold byte-identical text — M1b).
+    ///
+    /// With a DETERMINISTIC extractor that is harmless and arguably a
+    /// courtesy: the other workspace gets an identical graph slightly early.
+    /// Under a real LLM it is not, because extraction is non-deterministic — a
+    /// per-tenant run would REWRITE another tenant's already-correct edges for
+    /// that chunk with a different result. Behaviour is unchanged for now; the
+    /// decision is recorded in `.superpowers/sdd/progress.md`.
     workspace_id: Option<Uuid>,
 }
 
@@ -105,7 +120,10 @@ impl ExtractWorker {
     ///   2. Resolve every workspace whose live page currently references
     ///      this chunk (`graph::workspaces_for_chunk`) — a chunk is
     ///      content-addressed and can be shared across workspaces (M1b), and
-    ///      each one needs its own copy of the extraction written.
+    ///      each one needs its own copy of the extraction written. NOTE this
+    ///      lookup is UNSCOPED even when the worker is `new_scoped` — see
+    ///      `workspace_id`'s docs for what that means and why it is left as
+    ///      is.
     ///   3. Apply the SAME extraction to EACH workspace's graph
     ///      (`apply_extraction`, which resolves entities/edges and calls
     ///      `replace_chunk_edges` — scoped to that one workspace, and which

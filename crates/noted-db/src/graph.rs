@@ -77,9 +77,21 @@ pub async fn resolve_entity(
 /// Runs in ONE transaction: DELETE this workspace's existing edges for this
 /// chunk+model, INSERT the new set, then write the `(workspace_id,
 /// content_hash, model_id)` row in `chunk_extractions`. A crash mid-write
-/// rolls the whole thing back, so a workspace's graph for a chunk and its
-/// "done" marker always agree — the chunk is either fully extracted for this
-/// workspace or still fully pending, never marked-but-empty.
+/// rolls the whole thing back, so a workspace's EDGES for a chunk and its
+/// "done" marker always agree — never marked-but-edgeless.
+///
+/// SCOPE OF THAT GUARANTEE — edges and the marker, nothing wider. The caller
+/// (`noted_index::graph_write::apply_extraction`) resolves entity rows via
+/// `resolve_entity` on the POOL, before and outside this transaction, so a
+/// full extraction is NOT one atomic unit. A failure between the entity
+/// resolutions and this call leaves entities already inserted — and any
+/// `entity_type` reclassification already applied — with no edges and no
+/// marker. That is deliberately not widened here: it self-heals (the chunk is
+/// still pending, the next pass re-resolves the same entities idempotently and
+/// writes the edges) and loses no data; the residue is orphan entity nodes,
+/// which is the same standing gap as
+/// `orphan_entities_survive_an_edit_with_zero_live_edges_a_known_m2b_gap` and
+/// is tracked as an M2b-1 prerequisite.
 ///
 /// The marker lives INSIDE this transaction because it is per-workspace, the
 /// same granularity as the edge write. (It was briefly a separate

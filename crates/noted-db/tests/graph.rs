@@ -584,8 +584,19 @@ async fn replace_chunk_edges_absorbs_a_conflicting_row_its_delete_did_not_cover(
 /// filtered `pages.archived_at` — so archiving a page left its chunks in both
 /// the embedding and the extraction queue, and the graph/embeddings kept being
 /// built for content the user had deleted. Archiving is the product's delete;
-/// spending model calls on it (and surfacing its entities in a graph) is wrong
-/// on both cost and privacy grounds.
+/// spending model calls on it is waste.
+///
+/// SCOPE, STATED HONESTLY: this is a COST fix, not a privacy one. Archiving
+/// stops FUTURE work — it does not retract past work. Nothing deletes `edges`
+/// or `entities` when a page is archived (the only `DELETE FROM edges` in the
+/// codebase is `replace_chunk_edges`'s re-extraction scope), so an archived
+/// page's entities and relations persist in the graph in full. And because
+/// `extraction_progress` now reports (0, 0) for it, nothing will ever revisit
+/// them either. Retracting an archived page's graph needs the same machinery
+/// as reaping orphan entities — nothing in the system removes graph nodes or
+/// edges at all — and both are recorded together as an M2b-1 prerequisite in
+/// `.superpowers/sdd/progress.md`. See also
+/// `orphan_entities_survive_an_edit_with_zero_live_edges_a_known_m2b_gap`.
 ///
 /// Notably NOTHING in the M1b suite broke when this filter was added, because
 /// nothing covered the semantics at all — the gap was in coverage, not in an
