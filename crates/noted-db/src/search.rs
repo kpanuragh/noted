@@ -116,6 +116,18 @@ pub struct RelatedHit {
 /// single closest chunk (`DISTINCT ON (p.id)`) — `RelatedHit` promises related
 /// PAGES, and without this a 5-chunk page produces 5 rows that each compete for
 /// the LIMIT, letting one chunky page crowd out every other page.
+///
+/// # `embeddings_hnsw_idx` is approximate, not exact
+///
+/// HNSW is an ANN (approximate nearest-neighbour) index: it trades recall for
+/// speed, governed by `hnsw.ef_search` (default 40). At a few dozen vectors per
+/// `model_id` the approximation is exact in practice — the candidate list is
+/// small enough that the graph search finds the true top-k. As the vector count
+/// for a given `model_id` grows into the tens of thousands, recall degrades: a
+/// genuinely-nearest neighbour can fall outside the returned top-k. This is
+/// inherent to ANN, not a bug in this query. It means retrieval quality should
+/// be measured (and `ef_search` tuned upward if needed) before concluding a
+/// model's embeddings are bad.
 pub async fn related_pages(
     pool: &PgPool,
     page_id: Uuid,
@@ -243,6 +255,12 @@ const RRF_K: f32 = 60.0;
 /// one chunk can belong to several pages and one page to several chunks, so
 /// without this a multi-chunk page would produce several rows that each
 /// compete for a rank in the fusion.
+///
+/// Like `related_pages`, the vector arm's `near` CTE rides `embeddings_hnsw_idx`,
+/// which is an APPROXIMATE index (see that function's doc comment). At scale,
+/// recall for a given `model_id` is bounded by `hnsw.ef_search`, not just by the
+/// candidate LIMIT here — a real near neighbour can be missing from `near`
+/// entirely. The lexical arm's `UNION ALL` in `fused` is unaffected either way.
 pub async fn hybrid(
     pool: &PgPool,
     workspace_id: Uuid,

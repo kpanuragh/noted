@@ -111,7 +111,12 @@ async fn wildcards_in_the_query_are_literal() {
 /// `ANALYZE` so the planner has fresh statistics, then EXPLAIN both the old
 /// (broken) query shape and the new (fixed) one against the same data, to
 /// show the before/after.
+/// IGNORED BY DEFAULT: seeding 100k pages takes minutes, and a suite that slow
+/// stops being run at all — which costs more than this test catches. Run it
+/// explicitly when touching the query shape or its indexes:
+///   cargo test -p noted-db --test quickfind -- --ignored --nocapture
 #[tokio::test]
+#[ignore]
 async fn quick_find_uses_the_trigram_index() {
     let (pool, ws) = setup().await;
 

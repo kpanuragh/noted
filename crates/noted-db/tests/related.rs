@@ -1,6 +1,18 @@
 use noted_db::search;
 
-const M: &str = "test-model";
+/// A fresh, never-before-used model_id per test. `embeddings_hnsw_idx` is an
+/// approximate index whose recall degrades as the vector count for a given
+/// `model_id` grows (see `search::related_pages`'s doc comment) — earlier test
+/// runs against a persistent dev database left tens of thousands of vectors
+/// piled up under a single shared literal `"test-model"`, which made ANN
+/// search miss the genuinely-nearest neighbour intermittently. A unique
+/// `model_id` per test keeps each test's vector space small (a handful of
+/// vectors), exactly like the per-test fixture workspace keeps each test's
+/// row space small, so ANN search is exact for it regardless of what other
+/// tests or runs have piled up under other model ids.
+fn unique_model() -> String {
+    format!("test-model-{}", uuid::Uuid::new_v4())
+}
 
 async fn setup() -> (noted_db::PgPool, uuid::Uuid) {
     let url = std::env::var("DATABASE_URL")
@@ -45,19 +57,20 @@ async fn page_with_vecs_model(
 /// Build a page whose single chunk has a known embedding. `axis` picks which
 /// dimension is hot, so "similarity" is exactly controllable.
 async fn page_with_vec(
-    pool: &noted_db::PgPool, ws: uuid::Uuid, title: &str, text: &str, axis: usize,
+    pool: &noted_db::PgPool, ws: uuid::Uuid, title: &str, text: &str, axis: usize, model: &str,
 ) -> uuid::Uuid {
-    page_with_vecs_model(pool, ws, title, &[(text, axis_vec(axis))], M).await
+    page_with_vecs_model(pool, ws, title, &[(text, axis_vec(axis))], model).await
 }
 
 #[tokio::test]
 async fn a_similar_page_ranks_above_a_dissimilar_one() {
     let (pool, ws) = setup().await;
-    let source = page_with_vec(&pool, ws, "Source", "about postgres", 0).await;
-    let near = page_with_vec(&pool, ws, "Near", "also about postgres", 0).await;
-    let far = page_with_vec(&pool, ws, "Far", "about knitting", 500).await;
+    let model = unique_model();
+    let source = page_with_vec(&pool, ws, "Source", "about postgres", 0, &model).await;
+    let near = page_with_vec(&pool, ws, "Near", "also about postgres", 0, &model).await;
+    let far = page_with_vec(&pool, ws, "Far", "about knitting", 500, &model).await;
 
-    let hits = search::related_pages(&pool, source, M, 10).await.unwrap();
+    let hits = search::related_pages(&pool, source, &model, 10).await.unwrap();
     assert!(!hits.is_empty(), "related must return something");
 
     let near_pos = hits.iter().position(|h| h.page_id == near);
@@ -73,10 +86,11 @@ async fn a_similar_page_ranks_above_a_dissimilar_one() {
 #[tokio::test]
 async fn the_source_page_is_excluded_from_its_own_related_list() {
     let (pool, ws) = setup().await;
-    let source = page_with_vec(&pool, ws, "Source", "about postgres", 0).await;
-    let _other = page_with_vec(&pool, ws, "Other", "also postgres", 0).await;
+    let model = unique_model();
+    let source = page_with_vec(&pool, ws, "Source", "about postgres", 0, &model).await;
+    let _other = page_with_vec(&pool, ws, "Other", "also postgres", 0, &model).await;
 
-    let hits = search::related_pages(&pool, source, M, 10).await.unwrap();
+    let hits = search::related_pages(&pool, source, &model, 10).await.unwrap();
     assert!(
         !hits.iter().any(|h| h.page_id == source),
         "a page must never be related to itself"
@@ -87,10 +101,11 @@ async fn the_source_page_is_excluded_from_its_own_related_list() {
 async fn related_is_scoped_to_the_workspace() {
     let (pool, ws_a) = setup().await;
     let (_, ws_b) = setup().await;
-    let source = page_with_vec(&pool, ws_a, "Source", "about postgres", 0).await;
-    let foreign = page_with_vec(&pool, ws_b, "Foreign", "about postgres", 0).await;
+    let model = unique_model();
+    let source = page_with_vec(&pool, ws_a, "Source", "about postgres", 0, &model).await;
+    let foreign = page_with_vec(&pool, ws_b, "Foreign", "about postgres", 0, &model).await;
 
-    let hits = search::related_pages(&pool, source, M, 10).await.unwrap();
+    let hits = search::related_pages(&pool, source, &model, 10).await.unwrap();
     assert!(
         !hits.iter().any(|h| h.page_id == foreign),
         "related must never cross a workspace boundary"
@@ -111,16 +126,17 @@ async fn related_is_scoped_to_the_workspace() {
 #[tokio::test]
 async fn related_only_compares_within_one_model() {
     let (pool, ws) = setup().await;
-    let source = page_with_vec(&pool, ws, "Source", "about postgres", 0).await;
+    let model = unique_model();
+    let source = page_with_vec(&pool, ws, "Source", "about postgres", 0, &model).await;
     // A genuine same-model neighbour. Without this the test could pass simply
     // because the query returns nothing at all.
-    let same_model = page_with_vec(&pool, ws, "Same model", "also about postgres", 0).await;
+    let same_model = page_with_vec(&pool, ws, "Same model", "also about postgres", 0, &model).await;
     // Near-identical vector to the source's — but stored under a DIFFERENT model.
     let decoy = page_with_vecs_model(
         &pool, ws, "Decoy", &[("about postgres too", axis_vec(0))], "a-different-model",
     ).await;
 
-    let hits = search::related_pages(&pool, source, M, 10).await.unwrap();
+    let hits = search::related_pages(&pool, source, &model, 10).await.unwrap();
     assert!(
         hits.iter().any(|h| h.page_id == same_model),
         "the same-model neighbour must be returned, else this test proves nothing"
@@ -138,7 +154,8 @@ async fn related_only_compares_within_one_model() {
 #[tokio::test]
 async fn a_multi_chunk_page_appears_once() {
     let (pool, ws) = setup().await;
-    let source = page_with_vec(&pool, ws, "Source", "about postgres", 0).await;
+    let model = unique_model();
+    let source = page_with_vec(&pool, ws, "Source", "about postgres", 0, &model).await;
 
     // Three chunks, all NEAR the source (axis 0 dominant) but at increasing
     // distance, so there is a well-defined closest one.
@@ -154,10 +171,10 @@ async fn a_multi_chunk_page_appears_once() {
             ("middle chunk", near(0.3)),
             ("farthest chunk", near(0.5)),
         ],
-        M,
+        &model,
     ).await;
 
-    let hits = search::related_pages(&pool, source, M, 10).await.unwrap();
+    let hits = search::related_pages(&pool, source, &model, 10).await.unwrap();
     let appearances: Vec<_> = hits.iter().filter(|h| h.page_id == multi).collect();
     assert_eq!(
         appearances.len(), 1,
@@ -174,10 +191,11 @@ async fn a_multi_chunk_page_appears_once() {
 #[tokio::test]
 async fn a_page_with_no_embeddings_returns_nothing() {
     let (pool, ws) = setup().await;
+    let model = unique_model();
     let bare: uuid::Uuid = sqlx::query_scalar(
         "INSERT INTO pages (workspace_id, title) VALUES ($1, 'Bare') RETURNING id")
         .bind(ws).fetch_one(&pool).await.unwrap();
-    let hits = search::related_pages(&pool, bare, M, 10).await.unwrap();
+    let hits = search::related_pages(&pool, bare, &model, 10).await.unwrap();
     assert!(hits.is_empty(), "a page with no chunks must yield no related pages, not an error");
 }
 
@@ -198,10 +216,16 @@ async fn a_page_with_no_embeddings_returns_nothing() {
 /// so the heap is already ~18MB — far heavier per row than Task 1's `pages`,
 /// which needed 100k). `enable_seqscan` is NOT touched: this asserts the
 /// planner's real preference, not mere index usability.
+/// IGNORED BY DEFAULT: seeding 6k×768-float embeddings is slow enough to make
+/// the routine suite impractical, and a suite nobody runs catches nothing. Run
+/// it explicitly when touching the ANN query shape or its index:
+///   cargo test -p noted-db --test related -- --ignored --nocapture
 #[tokio::test]
+#[ignore]
 async fn related_pages_uses_the_hnsw_index() {
     let (pool, ws) = setup().await;
-    let source = page_with_vec(&pool, ws, "Source", "about postgres", 0).await;
+    let model = unique_model();
+    let source = page_with_vec(&pool, ws, "Source", "about postgres", 0, &model).await;
 
     // `tag` doubles as each filler page's title AND its chunk's content_hash,
     // which is what lets page_chunks be built with a plain title join below.
@@ -234,7 +258,7 @@ async fn related_pages_uses_the_hnsw_index() {
                 (SELECT array_agg(random()) FROM generate_series(1, 768) AS d(i)
                  WHERE d.i + g > 0)::vector
          FROM generate_series(1, 6000) g",
-    ).bind(&tag).bind(M).execute(&pool).await.unwrap();
+    ).bind(&tag).bind(&model).execute(&pool).await.unwrap();
 
     // Fresh statistics, or the planner costs these tables as if still empty.
     sqlx::query("ANALYZE embeddings").execute(&pool).await.unwrap();
@@ -275,7 +299,7 @@ async fn related_pages_uses_the_hnsw_index() {
          GROUP BY p.id, p.title, c.text
          ORDER BY distance
          LIMIT $3",
-    ).bind(source).bind(M).bind(10i64).fetch_all(&mut *tx).await.unwrap();
+    ).bind(source).bind(&model).bind(10i64).fetch_all(&mut *tx).await.unwrap();
     let before_plan = before_rows.iter().map(|r| r.0.as_str()).collect::<Vec<_>>().join("\n");
 
     // --- AFTER: the `near` CTE's shape, exactly as `related_pages` runs it. ---
@@ -306,7 +330,7 @@ async fn related_pages_uses_the_hnsw_index() {
            )
          ORDER BY e.embedding <=> (SELECT embedding FROM src)
          LIMIT $3::bigint * 5",
-    ).bind(source).bind(M).bind(10i64).fetch_all(&mut *tx).await.unwrap();
+    ).bind(source).bind(&model).bind(10i64).fetch_all(&mut *tx).await.unwrap();
     let after_plan = after_rows.iter().map(|r| r.0.as_str()).collect::<Vec<_>>().join("\n");
 
     tx.commit().await.unwrap();
