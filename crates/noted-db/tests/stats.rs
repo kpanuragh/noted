@@ -248,3 +248,117 @@ async fn an_empty_workspace_reports_zeroes_not_an_error() {
         (0, 0, 0, 0)
     );
 }
+
+/// LIVENESS APPLIES TO THE WHOLE STRUCT, not just to `pages`.
+///
+/// `pages` and `chunks_indexed` have always been live-scoped; `entities` and
+/// `edges` were lifetime totals over the workspace. That mix is observable and
+/// user-facing: archive every page and the dashboard read
+/// `pages: 0, chunks_indexed: 0, entities: 2, edges: 1` — a workspace with
+/// nothing in it and a knowledge graph. It is also a disagreement with the rest
+/// of the system rather than a matter of taste. `community`'s `clusterable_edges`
+/// CTE, and therefore every partition, summary and graph query the user can
+/// actually reach, counts an edge only while a LIVE page supplies its
+/// provenance. The dashboard was the one place claiming otherwise.
+///
+/// This is the same rule `chunks_indexed` was corrected under, and recorded in
+/// the ledger as a general one: a number that can contradict the UI it feeds is
+/// a bug in the number.
+///
+/// An entity is live when a live edge names it. Edgeless entities therefore do
+/// not count — consistent with `clusterable_graph`, whose node query has always
+/// restricted the node set to endpoints of live edges, so an edgeless entity is
+/// already invisible everywhere else in the product.
+#[tokio::test]
+async fn archiving_every_page_empties_the_graph_counts_too() {
+    let (pool, ws) = setup().await;
+    let model = model_id();
+    populate(&pool, ws, &model, "graph-liveness").await;
+
+    let before = stats::workspace_stats(&pool, ws, &model).await.unwrap();
+    assert_eq!(
+        (before.entities, before.edges),
+        (2, 1),
+        "sanity: the graph is there while its provenance page is live"
+    );
+
+    let live: Vec<uuid::Uuid> =
+        sqlx::query_scalar("SELECT id FROM pages WHERE workspace_id = $1 AND archived_at IS NULL")
+            .bind(ws)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    for p in live {
+        archive(&pool, p).await;
+    }
+
+    let after = stats::workspace_stats(&pool, ws, &model).await.unwrap();
+    assert_eq!(after.pages, 0, "sanity: everything is archived");
+    assert_eq!(
+        after.edges, 0,
+        "an edge whose only provenance is an archived page is not part of the workspace's live \
+         graph — the clusterer already agrees, and the dashboard must not disagree"
+    );
+    assert_eq!(
+        after.entities, 0,
+        "and an entity no live edge names is not a live node"
+    );
+}
+
+/// The liveness fix must not be a whole-workspace switch: archiving ONE page
+/// removes only the graph that page's chunks evidenced.
+///
+/// Without this, `entities`/`edges` could be made to satisfy the test above by
+/// zeroing whenever no live page exists at all, which is a different (and wrong)
+/// rule — provenance is per-chunk.
+#[tokio::test]
+async fn archiving_one_page_leaves_graph_evidenced_by_another() {
+    let (pool, ws) = setup().await;
+    let model = model_id();
+    let tag = format!("split-{}", uuid::Uuid::new_v4());
+
+    let keep = page(&pool, ws, "keep").await;
+    let drop = page(&pool, ws, "drop").await;
+    live_chunk(&pool, keep, &format!("{tag}-keep")).await;
+    live_chunk(&pool, drop, &format!("{tag}-drop")).await;
+
+    let a = graph::resolve_entity(&pool, ws, &format!("{tag}-a"), Some("PERSON"), None)
+        .await
+        .unwrap();
+    let b = graph::resolve_entity(&pool, ws, &format!("{tag}-b"), Some("PERSON"), None)
+        .await
+        .unwrap();
+    let c = graph::resolve_entity(&pool, ws, &format!("{tag}-c"), Some("PERSON"), None)
+        .await
+        .unwrap();
+    graph::replace_chunk_edges(
+        &pool,
+        ws,
+        &format!("{tag}-keep"),
+        &model,
+        &[(a, b, "knows".to_string(), 1.0)],
+    )
+    .await
+    .unwrap();
+    graph::replace_chunk_edges(
+        &pool,
+        ws,
+        &format!("{tag}-drop"),
+        &model,
+        &[(a, c, "knows".to_string(), 1.0)],
+    )
+    .await
+    .unwrap();
+
+    archive(&pool, drop).await;
+
+    let s = stats::workspace_stats(&pool, ws, &model).await.unwrap();
+    assert_eq!(
+        s.edges, 1,
+        "the edge evidenced by the surviving page must still count"
+    );
+    assert_eq!(
+        s.entities, 2,
+        "a and b remain live; c was named only by the archived page's edge"
+    );
+}

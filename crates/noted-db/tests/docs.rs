@@ -86,8 +86,22 @@ async fn post_compaction_appends_sort_after_snapshot() {
 /// verify that a racing append's *content* was semantically folded into the
 /// snapshot. That is the caller's concern (Task 8 builds the snapshot from
 /// the in-memory doc, not from raw bytes chosen by this test).
+///
+/// ISOLATION — WHY `RACERS` IS 12 AND NOT 20. Every task here holds a pooled
+/// connection for the whole of its transaction, and `noted_db::connect` builds a
+/// 16-connection pool. At 20 racers plus the compaction this test wanted 21
+/// connections from a pool of 16, so it had NEGATIVE headroom: it could only
+/// finish by queueing, and any unrelated pressure on the shared development
+/// database (another suite, a running server, a second agent) turned that
+/// queueing into `PoolTimedOut` — a failure that looks like a product deadlock
+/// and is not one. One such false alarm has already been investigated and
+/// retracted on this branch. `RACERS + 1 < 16` removes the pool from the set of
+/// things this test can fail on, and costs nothing: the invariant below needs a
+/// genuine race, not a particular number of racers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_appends_and_compact_keep_log_consistent() {
+    const RACERS: usize = 12;
+
     let (pool, page) = setup().await;
     for i in 0..10 {
         docs::append(&pool, page, format!("seed{i}").as_bytes())
@@ -95,9 +109,9 @@ async fn concurrent_appends_and_compact_keep_log_consistent() {
             .unwrap();
     }
 
-    // Race 20 appends against a compaction.
+    // Race RACERS appends against a compaction.
     let mut handles = Vec::new();
-    for i in 0..20 {
+    for i in 0..RACERS {
         let p = pool.clone();
         handles.push(tokio::spawn(async move {
             docs::append(&p, page, format!("racer{i}").as_bytes()).await
@@ -176,21 +190,50 @@ async fn appending_a_doc_update_bumps_the_pages_updated_at() {
 }
 
 /// The bump must be in the SAME transaction as the append, so the two can never
-/// disagree. Proven from the outside: a failed append (duplicate `seq`, forced
-/// by hand here) must leave `updated_at` untouched, which is only true if the
-/// UPDATE rolls back with it.
+/// disagree.
+///
+/// WHERE THE FAILURE IS RIGGED IS THE ENTIRE TEST. An earlier version of this
+/// test collided `doc_seq` so the INSERT into `doc_updates` failed — which is
+/// BEFORE the bump, so `?` returned early and the bump never ran at all. It
+/// therefore passed whether the bump was in the transaction or on the pool, and
+/// proved nothing about the property it is named for.
+///
+/// So the failure has to happen strictly AFTER the bump statement has succeeded,
+/// and the only such point is COMMIT. A `DEFERRABLE INITIALLY DEFERRED`
+/// constraint trigger is the one portable way to put a failure there: its body
+/// runs when the transaction commits, so `docs::append` gets all the way through
+/// the `UPDATE pages` and then the commit is refused. If the bump has escaped to
+/// its own transaction it has ALREADY committed by then and `updated_at` shows
+/// the edit that the log does not contain — which is exactly the disagreement
+/// the doc comment on `docs::append` claims is unrepresentable.
+///
+/// The trigger is scoped by a `WHEN` clause to this test's page, so it cannot
+/// affect any other row, and it is torn down before the assertions run so a
+/// failing assertion still leaves the shared dev database clean.
 #[tokio::test]
 async fn a_failed_append_does_not_bump_updated_at() {
     let (pool, page) = setup().await;
     docs::append(&pool, page, b"first").await.unwrap();
 
-    // Rewind the sequence so the next append collides with seq 0 and the
-    // INSERT into doc_updates fails after the doc_seq claim has been made.
-    sqlx::query("UPDATE doc_seq SET next = 0 WHERE page_id = $1")
-        .bind(page)
-        .execute(&pool)
-        .await
-        .unwrap();
+    // SAFETY (AssertSqlSafe): every interpolated value below is a `Uuid`
+    // rendered by its own `Display`, never user input. DDL cannot take bind
+    // parameters, so interpolation is the only option here.
+    let trig = format!("noted_test_fail_at_commit_{}", page.simple());
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE FUNCTION {trig}() RETURNS trigger LANGUAGE plpgsql AS \
+         $$ BEGIN RAISE EXCEPTION 'rigged commit-time failure'; END $$"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE CONSTRAINT TRIGGER {trig} AFTER INSERT ON doc_updates \
+         DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.page_id = '{page}') \
+         EXECUTE FUNCTION {trig}()"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let before: chrono::DateTime<chrono::Utc> =
         sqlx::query_scalar("SELECT updated_at FROM pages WHERE id = $1")
@@ -200,8 +243,31 @@ async fn a_failed_append_does_not_bump_updated_at() {
             .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-    let err = docs::append(&pool, page, b"collides").await;
-    assert!(err.is_err(), "the rigged append must fail");
+    let err = docs::append(&pool, page, b"fails at commit").await;
+
+    // Torn down BEFORE the assertions: a failure below must not leave DDL debris
+    // behind in a database other tests share.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP TRIGGER {trig} ON doc_updates"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP FUNCTION {trig}()")))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let err = err.expect_err("the rigged append must fail");
+    assert!(
+        err.to_string().contains("rigged commit-time failure"),
+        "the failure must be the deferred trigger firing at COMMIT — i.e. after the bump ran, \
+         not before it. Got: {err}"
+    );
+    assert!(
+        docs::load(&pool, page).await.unwrap() == vec![b"first".to_vec()],
+        "the rigged append must have rolled its doc_updates row back"
+    );
 
     let after: chrono::DateTime<chrono::Utc> =
         sqlx::query_scalar("SELECT updated_at FROM pages WHERE id = $1")
@@ -211,7 +277,8 @@ async fn a_failed_append_does_not_bump_updated_at() {
             .unwrap();
     assert_eq!(
         after, before,
-        "an append that failed must not leave pages.updated_at claiming an edit"
+        "an append whose COMMIT failed must not leave pages.updated_at claiming an edit that is \
+         not in the log — which is only true if the bump rolled back with it"
     );
 }
 

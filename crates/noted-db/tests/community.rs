@@ -429,3 +429,220 @@ async fn churn_is_scoped_to_its_workspace() {
         "workspace B's churn must be unaffected by A's"
     );
 }
+
+/// `clusterable_edge_count` counts DISTINCT UNORDERED ENTITY PAIRS, not edge
+/// rows — and until this test nothing in the suite could tell the difference.
+///
+/// WHY THAT MATTERED. `edges` is keyed
+/// `(source_entity, target_entity, relation, source_chunk_hash, model_id)`, so
+/// one conceptual link between two entities routinely occupies SEVERAL rows: one
+/// per relation the extractor emitted, one per chunk that evidenced it, and
+/// another set again if the two endpoints were emitted in the opposite order.
+/// The count feeds `cold_run_if_due`'s churn denominator
+/// (`ceil(0.05 * edges)`), and churn is counted in changed EDGES. Inflating the
+/// denominator by the row/pair ratio therefore raises the threshold by that same
+/// factor and the cold path fires proportionally LESS often than the 5% the
+/// design specifies — silently, since nothing else observes the number.
+///
+/// Every other fixture in this suite writes exactly one row per pair, which is
+/// why replacing the query body with a bare `count(*)` used to survive the whole
+/// workspace. This fixture is built to diverge: 5 rows, 2 pairs.
+#[tokio::test]
+async fn clusterable_edge_count_counts_distinct_pairs_not_edge_rows() {
+    let (pool, ws) = setup().await;
+    let page: Uuid =
+        sqlx::query_scalar("INSERT INTO pages (workspace_id, title) VALUES ($1, 'p') RETURNING id")
+            .bind(ws)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let ids = entities(&pool, ws, 3).await;
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+
+    // Two chunks, both live on `page`, so both are valid provenance. Hashes are
+    // content-addressed and therefore GLOBAL, so they carry a run marker to stay
+    // clear of other tests sharing this database.
+    let run = Uuid::new_v4().simple().to_string();
+    let (h1, h2) = (format!("ce-{run}-1"), format!("ce-{run}-2"));
+    noted_db::chunks::upsert(
+        &pool,
+        &[
+            (h1.clone(), format!("chunk one {run}"), 10),
+            (h2.clone(), format!("chunk two {run}"), 10),
+        ],
+    )
+    .await
+    .unwrap();
+    noted_db::chunks::set_page_chunks(&pool, page, &[h1.clone(), h2.clone()])
+        .await
+        .unwrap();
+
+    // Pair {a, b}, four rows: two relations x two provenance chunks, and the
+    // second chunk emits the endpoints in the REVERSE order — which the
+    // LEAST/GREATEST normalisation is what collapses.
+    noted_db::graph::replace_chunk_edges(
+        &pool,
+        ws,
+        &h1,
+        "m",
+        &[
+            (a, b, "mentions_with".into(), 1.0),
+            (a, b, "related_to".into(), 1.0),
+        ],
+    )
+    .await
+    .unwrap();
+    noted_db::graph::replace_chunk_edges(
+        &pool,
+        ws,
+        &h2,
+        "m",
+        &[
+            (b, a, "mentions_with".into(), 1.0),
+            (b, a, "related_to".into(), 1.0),
+            // Pair {a, c}: a genuinely second pair, so the assertion below pins a
+            // real count and not merely "collapses to one".
+            (a, c, "mentions_with".into(), 1.0),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let raw: i64 = sqlx::query_scalar("SELECT count(*) FROM edges WHERE workspace_id = $1")
+        .bind(ws)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        raw, 5,
+        "fixture sanity: the divergence this test exists to pin is 5 rows vs 2 pairs"
+    );
+
+    assert_eq!(
+        community::clusterable_edge_count(&pool, ws).await.unwrap(),
+        2,
+        "{{a,b}} and {{a,c}} are two distinct unordered pairs however many relations, chunks or \
+         endpoint orderings evidence them; counting rows instead would report {raw} and inflate \
+         the cold path's churn threshold by that ratio"
+    );
+}
+
+/// `reassign_entity` must validate the tenancy of BOTH of its ids, not just one.
+///
+/// The insert has always been scoped by `c.workspace_id`, so passing another
+/// tenant's COMMUNITY id wrote nothing. Nothing checked the ENTITY, so the
+/// mirror-image call — this workspace's own community, a foreign entity —
+/// happily inserted a `community_members` row joining tenant B's entity to
+/// tenant A's community. That is the same tenancy boundary, crossed from the
+/// other side.
+///
+/// Not reachable through `CommunityWorker` today, but `on_edges_changed` takes a
+/// caller-supplied `affected` list it does not validate, and the extraction
+/// worker already fans out across workspaces for shared content-addressed
+/// chunks. This is a public repository function and it must hold on its own.
+///
+/// A foreign id is a silent NO-OP, deliberately and symmetrically with the
+/// community guard: the hot path treats reassignment as infallible bookkeeping
+/// (see `CommunityWorker::hot_reassign`), so raising here would abort a run over
+/// a mistake this function can simply decline to make.
+#[tokio::test]
+async fn reassign_entity_refuses_an_entity_from_another_workspace() {
+    let (pool, ws_a) = setup().await;
+    let (_, ws_b) = setup().await;
+
+    let a = entities(&pool, ws_a, 2).await;
+    let b = entities(&pool, ws_b, 1).await;
+
+    community::swap_partition(&pool, ws_a, &[(0, vec![a[0], a[1]])])
+        .await
+        .unwrap();
+    let community_a: Uuid =
+        sqlx::query_scalar("SELECT id FROM communities WHERE workspace_id = $1")
+            .bind(ws_a)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    community::reassign_entity(&pool, ws_a, b[0], community_a)
+        .await
+        .expect("a foreign entity is declined, not an error");
+
+    assert_eq!(
+        stored_partition(&pool, ws_a).await,
+        canonical(&[vec![a[0], a[1]]]),
+        "workspace A's partition must be untouched by an attempt to move workspace B's entity \
+         into it"
+    );
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM community_members WHERE entity_id = $1")
+            .bind(b[0])
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        rows, 0,
+        "workspace B's entity must hold no membership in any community, least of all A's"
+    );
+}
+
+/// `swap_partition` reports how many communities it actually STORED, and it
+/// normalises an input that is not strictly a partition rather than collapsing
+/// it silently.
+///
+/// The old signature returned `()`, and `CommunityWorker::cold_run` reported
+/// `rows.len()` — the length of what it ASKED for. Those two numbers can differ,
+/// because identity here is `(level, member_set_hash)`: two entries with the same
+/// member set hash identically and the second one lands on `ON CONFLICT`, so a
+/// caller passing two identical member sets, or two EMPTY ones, was told 2 while
+/// the database held 1. Louvain cannot produce either (its communities are
+/// disjoint and non-empty), so nothing in production reaches this — but
+/// `swap_partition` is a public repository function, and a public function that
+/// reports a number it did not store is the same silent-divergence class this
+/// branch has been clearing out.
+///
+/// Empty member sets are DROPPED, not stored. That is the rule
+/// `reassign_entity` already applies at the other end — a community with no
+/// members describes nothing, cannot be summarised, and is deleted the moment a
+/// move empties it. Storing one here would have created exactly the row that
+/// function exists to remove, and two of them could not coexist anyway: both
+/// hash the empty set and `UNIQUE (workspace_id, level, member_set_hash)` admits
+/// one.
+#[tokio::test]
+async fn swap_partition_reports_what_it_stored_not_what_it_was_offered() {
+    let (pool, ws) = setup().await;
+    let e = entities(&pool, ws, 3).await;
+
+    let offered = vec![
+        (0, vec![e[0], e[1]]),
+        // The same member set again, written in the other order: same hash.
+        (0, vec![e[1], e[0]]),
+        (0, vec![e[2]]),
+        // Two communities describing nothing.
+        (0, vec![]),
+        (0, vec![]),
+    ];
+    let stored = community::swap_partition(&pool, ws, &offered)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        stored, 2,
+        "five entries offered, but they name only two distinct non-empty member sets"
+    );
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM communities WHERE workspace_id = $1")
+        .bind(ws)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        rows as usize, stored,
+        "and the reported number must be the number of rows there actually are"
+    );
+    assert_eq!(
+        stored_partition(&pool, ws).await,
+        canonical(&[vec![e[0], e[1]], vec![e[2]]]),
+        "the stored partition is the offered one with the duplicate and the empties normalised \
+         away — not something with a memberless community in it"
+    );
+}

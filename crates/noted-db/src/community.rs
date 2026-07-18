@@ -51,7 +51,30 @@ pub fn member_set_hash(entity_ids: &[Uuid]) -> String {
     format!("{:x}", h.finalize())
 }
 
-/// Replace a workspace's ENTIRE partition, in ONE transaction.
+/// Replace a workspace's ENTIRE partition, in ONE transaction. Returns the
+/// number of communities STORED.
+///
+/// # What `partition` is allowed to be, and what happens when it is not
+///
+/// A partition is a set of disjoint, non-empty member sets, and that is what
+/// Louvain hands over. This function is nevertheless public and takes a plain
+/// slice, so it normalises rather than trusting:
+///
+///   * an EMPTY member set is dropped — the same rule `reassign_entity` applies
+///     when a move empties a community, and for the same reasons: it describes
+///     nothing, cannot be summarised, and two of them cannot coexist anyway
+///     because both hash the empty set;
+///   * a member set that REPEATS one already seen at the same level is dropped,
+///     because identity here is `(level, member_set_hash)` and the two entries
+///     name one community.
+///
+/// The return value is what makes that safe. Identity being derived from
+/// membership means the `ON CONFLICT` below would have absorbed both cases
+/// regardless — storing one row per distinct key while the caller counted
+/// entries. `CommunityWorker::cold_run` reported exactly that count, so a
+/// caller could be told it had stored more communities than exist. Normalising
+/// up front and returning the normalised size makes the two agree by
+/// construction instead of by the caller's good behaviour.
 ///
 /// # The argument shape, and why
 ///
@@ -108,12 +131,31 @@ pub async fn swap_partition(
     pool: &sqlx::PgPool,
     workspace_id: Uuid,
     partition: &[(i32, Vec<Uuid>)],
-) -> Result<(), sqlx::Error> {
-    let levels: Vec<i32> = partition.iter().map(|(level, _)| *level).collect();
-    let hashes: Vec<String> = partition
-        .iter()
-        .map(|(_, members)| member_set_hash(members))
-        .collect();
+) -> Result<usize, sqlx::Error> {
+    // NORMALISE FIRST, and return the normalised size — see "What `partition` is
+    // allowed to be" above. Empty member sets are dropped; entries that repeat a
+    // `(level, member_set_hash)` already seen are dropped. Both were previously
+    // absorbed by the `ON CONFLICT` below, which stored one row per DISTINCT
+    // key while the caller was told it had stored one per ENTRY.
+    let mut levels: Vec<i32> = Vec::with_capacity(partition.len());
+    let mut hashes: Vec<String> = Vec::with_capacity(partition.len());
+    let mut normalised: Vec<(i32, &Vec<Uuid>)> = Vec::with_capacity(partition.len());
+    for (level, members) in partition {
+        if members.is_empty() {
+            continue;
+        }
+        let hash = member_set_hash(members);
+        if levels
+            .iter()
+            .zip(&hashes)
+            .any(|(l, h)| *l == *level && *h == hash)
+        {
+            continue;
+        }
+        levels.push(*level);
+        hashes.push(hash);
+        normalised.push((*level, members));
+    }
 
     let mut tx = pool.begin().await?;
 
@@ -137,7 +179,7 @@ pub async fn swap_partition(
     .execute(&mut *tx)
     .await?;
 
-    for ((level, members), hash) in partition.iter().zip(&hashes) {
+    for ((level, members), hash) in normalised.iter().zip(&hashes) {
         // `DO UPDATE SET level = EXCLUDED.level` is a deliberate no-op write:
         // it re-sets the column to the value it already has, purely so that
         // RETURNING yields the id on the conflict path too. `DO NOTHING`
@@ -161,26 +203,27 @@ pub async fn swap_partition(
             .execute(&mut *tx)
             .await?;
 
-        if !members.is_empty() {
-            // De-duplicated to match `member_set_hash`, which hashes the set:
-            // a repeated id would otherwise violate the primary key and abort a
-            // swap over a membership the hash considers perfectly ordinary.
-            let mut unique: Vec<Uuid> = members.clone();
-            unique.sort_unstable();
-            unique.dedup();
+        // De-duplicated to match `member_set_hash`, which hashes the set: a
+        // repeated id would otherwise violate the primary key and abort a swap
+        // over a membership the hash considers perfectly ordinary. `members` is
+        // non-empty by construction — the normalisation above dropped the empty
+        // ones — so there is no emptiness case left to guard.
+        let mut unique: Vec<Uuid> = (*members).clone();
+        unique.sort_unstable();
+        unique.dedup();
 
-            sqlx::query(
-                "INSERT INTO community_members (community_id, entity_id)
-                 SELECT $1, e FROM UNNEST($2::uuid[]) AS x(e)",
-            )
-            .bind(community_id)
-            .bind(&unique)
-            .execute(&mut *tx)
-            .await?;
-        }
+        sqlx::query(
+            "INSERT INTO community_members (community_id, entity_id)
+             SELECT $1, e FROM UNNEST($2::uuid[]) AS x(e)",
+        )
+        .bind(community_id)
+        .bind(&unique)
+        .execute(&mut *tx)
+        .await?;
     }
 
-    tx.commit().await
+    tx.commit().await?;
+    Ok(normalised.len())
 }
 
 /// Add `n` to a workspace's churn counter — edges changed since its last full
@@ -294,6 +337,12 @@ macro_rules! clusterable_edges_cte {
     )"
     };
 }
+
+// Re-exported crate-internally so `stats` can splice the SAME definition rather
+// than paraphrase it. The dashboard's `entities`/`edges` counts and the
+// clusterer must agree on which edges exist for the same reason the hot and cold
+// paths must: two texts saying the same thing today is not a guarantee.
+pub(crate) use clusterable_edges_cte;
 
 /// The workspace's clusterable entity graph: `(nodes, edges)`.
 ///
@@ -411,8 +460,12 @@ pub async fn clusterable_edge_count(
 /// strictly better guess than giving up. Returns `None` only when no clusterable
 /// neighbour of `entity_id` belongs to any of this workspace's communities.
 ///
-/// Uses the SAME `CLUSTERABLE_EDGES` definition the cold path uses. That is the
-/// single most important line in this module.
+/// Splices the SAME `clusterable_edges_cte!` macro the cold path splices — the
+/// hot path and the cold path must never disagree about which edges exist, or
+/// the approximation is approximating a different graph from the one it will be
+/// corrected against. That is the single most important line in this module.
+/// (This referred to a `CLUSTERABLE_EDGES` const until sqlx 0.9's `SqlSafeStr`
+/// bound forced the shared definition to become a macro; see the note there.)
 pub async fn strongest_clustered_neighbour(
     pool: &sqlx::PgPool,
     workspace_id: Uuid,
@@ -474,6 +527,17 @@ pub async fn strongest_clustered_neighbour(
 /// partition's communities are disjoint, so no two share a member set.
 /// Cascades take the members and the summary with it, which is correct — the
 /// summary described a membership that no longer exists.
+///
+/// # Tenancy is checked on BOTH ids, and a foreign one is a silent no-op
+///
+/// A `community_members` row names a community AND an entity, so `workspace_id`
+/// has to gate both or the boundary is only half closed. It was half closed
+/// until a review probed the unguarded side: the insert scoped `communities` and
+/// nothing scoped `entities`, so `reassign_entity(A, entity_of_B,
+/// community_of_A)` returned `Ok` having written a cross-tenant membership. Both
+/// are guarded now, and a call naming either a foreign community or a foreign
+/// entity writes nothing and reports success — see the note at the insert for
+/// why declining beats raising on this path.
 pub async fn reassign_entity(
     pool: &sqlx::PgPool,
     workspace_id: Uuid,
@@ -511,12 +575,23 @@ pub async fn reassign_entity(
     .execute(&mut *tx)
     .await?;
 
-    // Scoped to the workspace: a caller that passed another tenant's community
-    // id must write nothing at all, rather than quietly moving an entity across
-    // the tenancy boundary.
+    // BOTH ids are scoped to the workspace, and both directions are load-bearing.
+    // A membership row names a community and an entity, so it can cross the
+    // tenancy boundary from either end: another tenant's COMMUNITY (guarded by
+    // `c.workspace_id`) or another tenant's ENTITY (guarded by the join to
+    // `entities`). Guarding only the community — which is what this did until a
+    // review probed the other side — let `reassign_entity(A, entity_of_B,
+    // community_of_A)` insert a cross-tenant row and return `Ok`. Either foreign
+    // id now writes nothing at all.
+    //
+    // Declining rather than erroring, deliberately: `CommunityWorker::hot_reassign`
+    // treats each reassignment as infallible bookkeeping, so a raise here would
+    // abort a hot-path run over a write this statement can simply not perform.
     sqlx::query(
         "INSERT INTO community_members (community_id, entity_id)
-         SELECT c.id, $2 FROM communities c
+         SELECT c.id, en.id
+         FROM communities c
+         JOIN entities en ON en.id = $2 AND en.workspace_id = $3
          WHERE c.id = $1 AND c.workspace_id = $3
          ON CONFLICT DO NOTHING",
     )

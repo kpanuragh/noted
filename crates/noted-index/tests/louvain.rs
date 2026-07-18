@@ -142,10 +142,20 @@ fn canonicalise(
     (sorted, out)
 }
 
-/// Partition as sets of *names* — the only representation comparable across
-/// runs whose index assignment differs. Raw label vectors are not comparable:
-/// two partitions can be identical as set-partitions while assigning different
-/// integer labels.
+/// Partition as sets of *names*, for the PERMUTATION tests specifically.
+///
+/// The re-expression is about node IDENTITY, not about ordering. Those tests
+/// permute the input, so node index 3 in one run and node index 3 in another are
+/// different graph vertices; only the names carry identity across runs, and no
+/// amount of canonicalisation inside [`Partition`] could recover it.
+///
+/// Ordering is a separate concern and [`Partition`] already owns it: it sorts
+/// its communities at construction, so `==` on two `Partition`s over the SAME
+/// index space is set-partition equality — see
+/// `partition_equality_ignores_the_labels_that_induced_it`. The `BTreeSet`s here
+/// are therefore belt-and-braces, not the thing that makes comparison work; an
+/// earlier version of this comment claimed they were "the only representation
+/// comparable across runs", which contradicted the type's own guarantee.
 fn named_partition(part: &Partition, names: &[String]) -> BTreeSet<BTreeSet<String>> {
     part.communities()
         .iter()
@@ -338,5 +348,38 @@ fn exact_gain_ties_resolve_deterministically() {
         part.communities(),
         &[vec![0, 1, 2, 3, 8], vec![4, 5, 6, 7]],
         "tie did not resolve toward the lower community id"
+    );
+}
+
+/// `Partition` claims that `==` is set-partition equality — that the arbitrary
+/// integer labels which induced a grouping cannot be observed through it. That
+/// claim rests entirely on the `communities.sort()` in `from_labels`, and until
+/// this test, deleting that line survived the whole suite: no caller and no
+/// other test ever compared two `Partition`s directly.
+///
+/// The label sets below are chosen so the mechanism is REACHED. `from_labels`
+/// groups through a `BTreeMap`, so communities come out ordered by LABEL value;
+/// `{0, 1}` yields them in the order `[[0,1],[2,3]]` and `{5, 1}` in the
+/// opposite order `[[2,3],[0,1]]`. Same grouping, different emission order —
+/// which is exactly the difference the sort exists to erase, and which labels
+/// whose relative order happens to agree could never expose.
+#[test]
+fn partition_equality_ignores_the_labels_that_induced_it() {
+    let a = Partition::from_labels(&[0, 0, 1, 1]);
+    let b = Partition::from_labels(&[5, 5, 1, 1]);
+
+    assert_eq!(
+        a,
+        b,
+        "two label vectors inducing the same grouping must be the same Partition; labels are \
+         arbitrary and must not be observable through ==\n  a: {:?}\n  b: {:?}",
+        a.communities(),
+        b.communities()
+    );
+    assert_eq!(
+        b.communities(),
+        &[vec![0, 1], vec![2, 3]],
+        "and the canonical form is specifically the member-sorted one, not whichever order the \
+         labels happened to emit"
     );
 }

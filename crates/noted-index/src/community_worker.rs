@@ -136,10 +136,14 @@ impl CommunityWorker {
             .map(|members| (0, members.iter().map(|&i| nodes[i].0).collect()))
             .collect();
 
-        community::swap_partition(&self.pool, self.workspace_id, &rows).await?;
+        // The count comes from the SWAP, not from `rows.len()`. They are the
+        // same number for a Louvain partition (disjoint, non-empty communities)
+        // but `swap_partition` normalises its input, so taking the length of
+        // what we asked for would be reporting a request as a result.
+        let stored = community::swap_partition(&self.pool, self.workspace_id, &rows).await?;
         community::mark_full_run(&self.pool, self.workspace_id).await?;
 
-        Ok(rows.len())
+        Ok(stored)
     }
 
     /// THE HOT PATH. Each entity in `entities` joins the community of its most

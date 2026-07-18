@@ -330,8 +330,8 @@ async fn entities_reachable_only_from_an_archived_page_are_not_clustered() {
 /// key gating a per-tenant decision), which is why it gets its own test rather
 /// than being assumed to fall out of the archived-page one above.
 #[tokio::test]
-async fn an_edge_is_dead_when_its_own_workspaces_page_is_archived_even_if_another_workspace_shares_the_chunk()
- {
+async fn an_edge_is_dead_when_its_own_workspaces_page_is_archived_even_if_another_workspace_shares_the_chunk(
+) {
     let pool = connect().await;
     let ws_a = workspace(&pool).await;
     let ws_b = workspace(&pool).await;
@@ -585,11 +585,20 @@ async fn a_cold_run_resets_churn_and_stamps_last_full_run_at() {
 /// The threshold is what separates the hot path from the cold one. A workspace
 /// under it must be served by the cheap approximation ONLY.
 ///
-/// 40 clusterable edges, so the threshold is `ceil(0.05 * 40) = 2` and the
-/// distinction between "one edge changed" and "two edges changed" is
-/// observable. With a smaller fixture the `max(1, ...)` floor would make every
-/// edit trip the threshold and the test could not tell a working threshold from
-/// no threshold at all.
+/// 41 clusterable edges, and the 41 is chosen rather than incidental: it is the
+/// smallest fixture on which `ceil` and `floor` DISAGREE.
+/// `0.05 * 41 = 2.05`, so the threshold is 3 under the `ceil` the code specifies
+/// and 2 under a `floor`. The earlier 40-edge version put the boundary at
+/// `0.05 * 40 = 2.0` exactly, where the two rounding modes coincide — so
+/// replacing `ceil` with `floor` in `cold_run_if_due` left this test, and the
+/// whole suite, green. A test of a rounding rule has to sit somewhere the
+/// rounding actually rounds.
+///
+/// (An earlier revision of this comment justified the fixture size by "the
+/// `max(1, ...)` floor". That mechanism was found unreachable and DELETED —
+/// `ceil` already returns at least 1 for any non-empty graph, and the empty
+/// graph returns earlier at the `changed <= 0` guard. See the note in
+/// `CommunityWorker::cold_run_if_due`.)
 #[tokio::test]
 async fn the_cold_path_fires_only_once_churn_crosses_the_threshold() {
     let pool = connect().await;
@@ -597,17 +606,18 @@ async fn the_cold_path_fires_only_once_churn_crosses_the_threshold() {
     let pg = page(&pool, ws).await;
     let run = Uuid::new_v4().simple().to_string();
 
-    let names: Vec<String> = (0..41).map(|i| format!("c{i:02}")).collect();
+    let names: Vec<String> = (0..42).map(|i| format!("c{i:02}")).collect();
     let order: Vec<&str> = names.iter().map(String::as_str).collect();
-    let edges: Vec<(&str, &str, f32)> = (0..40)
+    let edges: Vec<(&str, &str, f32)> = (0..41)
         .map(|i| (names[i].as_str(), names[i + 1].as_str(), 1.0f32))
         .collect();
     seed_graph(&pool, ws, pg, &run, "chain", &order, &edges).await;
 
     assert_eq!(
         community::clusterable_edge_count(&pool, ws).await.unwrap(),
-        40,
-        "sanity: the threshold is a fraction of THIS number"
+        41,
+        "sanity: the threshold is a fraction of THIS number, and 41 is what separates \
+         ceil(2.05) = 3 from floor(2.05) = 2"
     );
 
     let worker = CommunityWorker::new(pool.clone(), ws);
@@ -615,7 +625,7 @@ async fn the_cold_path_fires_only_once_churn_crosses_the_threshold() {
     let first = worker.on_edges_changed(&[], 1).await.unwrap();
     assert!(
         !first.cold_run,
-        "1 changed edge out of 40 is under the 5% threshold and must NOT trigger a full re-cluster"
+        "1 changed edge out of 41 is under the 5% threshold and must NOT trigger a full re-cluster"
     );
     assert!(
         stored_partition(&pool, ws).await.is_empty(),
@@ -623,10 +633,23 @@ async fn the_cold_path_fires_only_once_churn_crosses_the_threshold() {
          about the cold path and not merely about a return value"
     );
 
+    // THE ROUNDING STEP. Churn reaches 2, which is `floor(0.05 * 41)` but not
+    // `ceil(0.05 * 41)`. A cold run here means the threshold rounded down.
+    let at_floor = worker.on_edges_changed(&[], 1).await.unwrap();
+    assert!(
+        !at_floor.cold_run,
+        "2 changed edges reach floor(0.05 * 41) but not ceil(0.05 * 41) = 3; rounding DOWN would \
+         fire the cold path here, and the threshold is specified as a ceiling"
+    );
+    assert!(
+        stored_partition(&pool, ws).await.is_empty(),
+        "and no partition may have been written behind that return value either"
+    );
+
     let second = worker.on_edges_changed(&[], 1).await.unwrap();
     assert!(
         second.cold_run,
-        "the second changed edge takes churn to 2, which reaches ceil(0.05 * 40); the cold path \
+        "the third changed edge takes churn to 3, which reaches ceil(0.05 * 41); the cold path \
          must fire"
     );
     assert!(
@@ -1337,3 +1360,100 @@ const KARATE_EDGES: [(usize, usize); 78] = [
     (31, 33),
     (32, 33),
 ];
+
+/// `mark_full_run` runs AFTER `swap_partition`, never before — and until this
+/// test, swapping those two lines survived the entire workspace.
+///
+/// The ordering is the difference between a failed cold run that still owes a
+/// cold run and one that has erased the evidence it is owed. `mark_full_run`
+/// zeroes the churn counter and stamps `last_full_run_at` in one statement, and
+/// it is `pool`-scoped, so it commits on its own regardless of what the swap
+/// does. Run first, it would report a freshly-clustered workspace whose
+/// partition is in fact whatever the previous run left; and because the churn
+/// counter is the ONLY thing that makes the cold path fire again, the workspace
+/// would then have to accumulate a whole fresh threshold's worth of edits before
+/// anything retried. Silent and self-perpetuating — the error direction this
+/// project has already been bitten by twice.
+///
+/// A cold run that succeeds proves nothing about ordering, so the failure is
+/// FORCED, and it has to land inside `swap_partition` specifically. A
+/// `DEFERRABLE INITIALLY DEFERRED` constraint trigger scoped to this
+/// workspace's `communities` rows does that precisely: the swap runs to
+/// completion and its COMMIT is refused, which is a failure `cold_run` cannot
+/// have already passed. The trigger is torn down before the assertions so a
+/// failing assertion leaves no DDL in the shared dev database.
+#[tokio::test]
+async fn a_cold_run_whose_swap_fails_still_owes_a_cold_run() {
+    let pool = connect().await;
+    let ws = workspace(&pool).await;
+    let pg = page(&pool, ws).await;
+    let run = Uuid::new_v4().simple().to_string();
+
+    seed_graph(
+        &pool,
+        ws,
+        pg,
+        &run,
+        "owed",
+        &["x", "y", "z"],
+        &[("x", "y", 1.0), ("y", "z", 1.0)],
+    )
+    .await;
+
+    community::bump_churn(&pool, ws, 7).await.unwrap();
+
+    // SAFETY (AssertSqlSafe): the interpolated values are a `Uuid` rendered by
+    // its own `Display`. DDL cannot take bind parameters.
+    let trig = format!("noted_test_swap_fails_{}", ws.simple());
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE FUNCTION {trig}() RETURNS trigger LANGUAGE plpgsql AS \
+         $$ BEGIN RAISE EXCEPTION 'rigged swap failure'; END $$"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE CONSTRAINT TRIGGER {trig} AFTER INSERT ON communities \
+         DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.workspace_id = '{ws}') \
+         EXECUTE FUNCTION {trig}()"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let worker = CommunityWorker::new(pool.clone(), ws);
+    let outcome = worker.cold_run().await;
+
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP TRIGGER {trig} ON communities"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP FUNCTION {trig}()")))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let err = outcome.expect_err("the rigged cold run must fail");
+    assert!(
+        format!("{err:?}").contains("rigged swap failure"),
+        "sanity: the failure must be the swap's COMMIT being refused, not something incidental: \
+         {err:?}"
+    );
+
+    let (changed, stamp) = community::churn(&pool, ws).await.unwrap();
+    assert_eq!(
+        changed, 7,
+        "a cold run whose swap failed must leave the churn counter intact — it is the only thing \
+         that will make the cold path try again"
+    );
+    assert!(
+        stamp.is_none(),
+        "and it must not stamp last_full_run_at, which would claim a full run that never landed"
+    );
+    assert!(
+        stored_partition(&pool, ws).await.is_empty(),
+        "sanity: no partition was written, so the stamp above would have been a pure lie"
+    );
+}

@@ -94,10 +94,13 @@ pub const MAX_RECENT_LIMIT: i64 = 50;
 /// cannot be used for recency instead: it carries no timestamp, and `compact`
 /// merges the whole log into one row.
 ///
-/// "Live" is `archived_at IS NULL` — the SAME definition already shared by
+/// "Live" is `archived_at IS NULL` — the SAME definition shared by
 /// `chunks::pending`, `chunks::progress`, `graph::pending_extraction`,
-/// `graph::extraction_progress` and `all_page_ids`. A sixth, differing notion of
-/// live would be a bug, not a feature.
+/// `graph::extraction_progress`, `all_page_ids`, `community`'s
+/// `clusterable_edges` CTE, `stats::workspace_stats` and migration 0010's
+/// partial index. A differing notion of live would be a bug, not a feature.
+/// No count is given on purpose: this list has grown three times and a stale
+/// number reads as a stale invariant.
 ///
 /// `limit` is clamped to `1..=MAX_RECENT_LIMIT`. A zero or negative limit is
 /// caller error, not a request for everything, and is treated as 1.
