@@ -13,7 +13,9 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
 
 pub mod blocks;
 pub mod chunks;
+pub mod community;
 pub mod docs;
 pub mod graph;
 pub mod pages;
 pub mod search;
+pub mod stats;

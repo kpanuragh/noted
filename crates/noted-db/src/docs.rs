@@ -25,6 +25,32 @@ pub async fn append(pool: &PgPool, page_id: Uuid, update: &[u8]) -> Result<i64, 
         .execute(&mut *tx)
         .await?;
 
+    // Content edits are what `pages.updated_at` is FOR, and until now only
+    // `pages::rename` ever wrote it — so a "recently edited" view showed rename
+    // time and a user could type all day without their page moving.
+    // `doc_updates` cannot supply recency instead: it has no timestamp of its
+    // own, and `compact` collapses the whole log into one row anyway.
+    //
+    // IN THIS TRANSACTION, DELIBERATELY. The append is the edit; if the bump
+    // could commit separately the two would disagree in both directions — a
+    // rolled-back append leaving `updated_at` claiming an edit that is not in
+    // the log, or a committed append the dashboard never surfaces. Same
+    // transaction makes those states unrepresentable.
+    //
+    // LAST in the transaction, and this ordering matters: `append` now takes a
+    // `doc_seq` row lock and then a `pages` row lock, always in that order.
+    // Nothing in the codebase takes them the other way round (`pages::rename`
+    // touches only `pages`; `compact` only `doc_seq` + `doc_updates`), so no
+    // deadlock cycle exists — but a future writer that locks `pages` first and
+    // then appends would create one.
+    //
+    // Unconditional, i.e. one row version per append. See the note on write
+    // amplification in `pages::recent`.
+    sqlx::query("UPDATE pages SET updated_at = now() WHERE id = $1")
+        .bind(page_id)
+        .execute(&mut *tx)
+        .await?;
+
     tx.commit().await?;
     Ok(seq)
 }

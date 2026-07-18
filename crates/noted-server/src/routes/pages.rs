@@ -54,6 +54,46 @@ pub async fn list(
     ))
 }
 
+/// Rows returned by `/api/pages/recent` when the caller does not ask for a
+/// number. `pages::recent` clamps whatever it is given to
+/// `pages::MAX_RECENT_LIMIT`, so this default cannot be raised past the cap by
+/// a query string.
+const DEFAULT_RECENT_LIMIT: i64 = 10;
+
+#[derive(serde::Deserialize)]
+pub struct RecentQuery {
+    pub workspace_id: Uuid,
+    pub limit: Option<i64>,
+}
+
+/// `GET /api/pages/recent?workspace_id=&limit=`
+///
+/// The dashboard's "recently edited" list: live pages ordered by
+/// `updated_at DESC`, which since `docs::append` bumps it now genuinely means
+/// last EDIT rather than last rename.
+///
+/// A missing or malformed `workspace_id` never reaches this handler — axum's
+/// `Query` extractor rejects it with `400` first, the same mechanism `list` and
+/// `search::quick_find` already rely on.
+///
+/// `limit` is NOT trusted. The clamp lives in `pages::recent` rather than here
+/// so that every caller inherits it, but it bears repeating why it exists at
+/// all: an uncapped caller-supplied `LIMIT` lets one request ask for a tenant's
+/// entire page table.
+///
+/// Registered BEFORE `/api/pages/{id}` is not what makes this reachable —
+/// axum's router matches a static segment in preference to a dynamic one
+/// regardless of declaration order — but `recent` is not a UUID, so if that
+/// preference ever changed this route would start returning `400` from the
+/// `{id}` extractor. `recent_is_not_shadowed_by_the_page_id_route` pins it.
+pub async fn recent(
+    State(st): State<AppState>,
+    Query(q): Query<RecentQuery>,
+) -> Result<Json<Vec<Page>>, AppError> {
+    let limit = q.limit.unwrap_or(DEFAULT_RECENT_LIMIT);
+    Ok(Json(pages::recent(&st.pool, q.workspace_id, limit).await?))
+}
+
 #[derive(serde::Deserialize)]
 pub struct RenameBody {
     pub title: String,

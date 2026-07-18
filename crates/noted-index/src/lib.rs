@@ -8,6 +8,28 @@ pub mod materialize;
 // needs no feature gate. The real (LLM-backed) providers arrive in Task 5.
 pub mod extract;
 
+// In-house Louvain community detection: pure algorithm, no db, no async, no
+// new dependency (`rustworkx-core` ships no Louvain at any version).
+pub mod louvain;
+
+// The community worker: hot-path local reassignment, cold-path full Louvain,
+// and the churn threshold between them. Depends on `louvain` + `noted-db`;
+// like `extract_worker` it needs neither `embed`'s ONNX weight nor a network
+// client, so it stays unconditional rather than feature-gated.
+pub mod community_worker;
+
+// The community summariser: the `SummaryProvider` trait + a deterministic
+// stub. Pure logic (no db, no network), exactly like `extract` above, so no
+// feature gate. A real LLM-backed summariser would be a separate, gated
+// module — see this one's header for the non-negotiable it must carry.
+pub mod summary;
+
+// The summary worker: the set-difference queue over `communities` vs
+// `community_summaries`, and lazy invalidation by `member_set_hash`. Needs
+// `noted-db` and `summary`, neither of which drags in `embed`'s ONNX weight
+// or an HTTP client, so it stays unconditional like `extract_worker`.
+pub mod summary_worker;
+
 // Bridges `extract::Extraction` (name-based, as an extractor emits it) to
 // `noted_db::graph`'s id-based primitive writes. Pure db + logic, no
 // network — unconditional like `extract` above.
