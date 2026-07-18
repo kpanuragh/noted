@@ -31,6 +31,9 @@ pub fn app(state: AppState) -> Router {
             "/api/pages",
             get(routes::pages::list).post(routes::pages::create),
         )
+        // Declared before "/api/pages/{id}" for readability; axum matches the
+        // static segment in preference to the dynamic one either way.
+        .route("/api/pages/recent", get(routes::pages::recent))
         .route(
             "/api/pages/{id}",
             get(routes::pages::get).patch(routes::pages::rename),
@@ -39,6 +42,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/pages/{id}/related", get(routes::search::related))
         .route("/api/quickfind", get(routes::search::quick_find))
         .route("/api/search", get(routes::search::search))
+        .route(
+            "/api/workspaces/{workspace_id}/stats",
+            get(routes::workspaces::stats),
+        )
         .route("/sync/{page_id}", get(routes::sync::handler))
         .layer(cors_layer())
         .with_state(state)

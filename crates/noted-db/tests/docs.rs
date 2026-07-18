@@ -139,6 +139,82 @@ async fn concurrent_appends_and_compact_keep_log_consistent() {
     assert_eq!(seqs, expected, "doc_updates seq must be contiguous from 0");
 }
 
+/// `pages.updated_at` must track CONTENT edits, not just renames.
+///
+/// Before this, `rename` was the only writer of `updated_at`, while every real
+/// edit flowed through the CRDT sync path into `docs::append` and never touched
+/// it. Anything built on "recently edited" would have shown rename time: a user
+/// could type all day and the page would not move.
+///
+/// STRICT `>`, and a real sleep first. `now()` is transaction-start time in
+/// Postgres, so the create and the append genuinely get different values — but
+/// a `>=` here would pass even if the fix were deleted entirely, which is the
+/// exact trap this project has shipped before.
+#[tokio::test]
+async fn appending_a_doc_update_bumps_the_pages_updated_at() {
+    let (pool, page) = setup().await;
+    let before: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT updated_at FROM pages WHERE id = $1")
+            .bind(page)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    docs::append(&pool, page, b"an edit").await.unwrap();
+
+    let after: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT updated_at FROM pages WHERE id = $1")
+            .bind(page)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        after > before,
+        "docs::append must bump pages.updated_at: before={before}, after={after}"
+    );
+}
+
+/// The bump must be in the SAME transaction as the append, so the two can never
+/// disagree. Proven from the outside: a failed append (duplicate `seq`, forced
+/// by hand here) must leave `updated_at` untouched, which is only true if the
+/// UPDATE rolls back with it.
+#[tokio::test]
+async fn a_failed_append_does_not_bump_updated_at() {
+    let (pool, page) = setup().await;
+    docs::append(&pool, page, b"first").await.unwrap();
+
+    // Rewind the sequence so the next append collides with seq 0 and the
+    // INSERT into doc_updates fails after the doc_seq claim has been made.
+    sqlx::query("UPDATE doc_seq SET next = 0 WHERE page_id = $1")
+        .bind(page)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let before: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT updated_at FROM pages WHERE id = $1")
+            .bind(page)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    let err = docs::append(&pool, page, b"collides").await;
+    assert!(err.is_err(), "the rigged append must fail");
+
+    let after: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT updated_at FROM pages WHERE id = $1")
+            .bind(page)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        after, before,
+        "an append that failed must not leave pages.updated_at claiming an edit"
+    );
+}
+
 #[tokio::test]
 async fn load_for_page_with_no_updates_is_empty() {
     let (pool, page) = setup().await;

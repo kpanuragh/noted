@@ -18,3 +18,4 @@ pub mod docs;
 pub mod graph;
 pub mod pages;
 pub mod search;
+pub mod stats;
