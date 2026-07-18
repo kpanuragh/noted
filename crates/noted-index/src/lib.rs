@@ -8,6 +8,10 @@ pub mod materialize;
 // needs no feature gate. The real (LLM-backed) providers arrive in Task 5.
 pub mod extract;
 
+// In-house Louvain community detection: pure algorithm, no db, no async, no
+// new dependency (`rustworkx-core` ships no Louvain at any version).
+pub mod louvain;
+
 // Bridges `extract::Extraction` (name-based, as an extractor emits it) to
 // `noted_db::graph`'s id-based primitive writes. Pure db + logic, no
 // network — unconditional like `extract` above.
