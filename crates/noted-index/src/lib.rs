@@ -12,6 +12,12 @@ pub mod extract;
 // new dependency (`rustworkx-core` ships no Louvain at any version).
 pub mod louvain;
 
+// The community worker: hot-path local reassignment, cold-path full Louvain,
+// and the churn threshold between them. Depends on `louvain` + `noted-db`;
+// like `extract_worker` it needs neither `embed`'s ONNX weight nor a network
+// client, so it stays unconditional rather than feature-gated.
+pub mod community_worker;
+
 // Bridges `extract::Extraction` (name-based, as an extractor emits it) to
 // `noted_db::graph`'s id-based primitive writes. Pure db + logic, no
 // network — unconditional like `extract` above.
