@@ -86,6 +86,12 @@ pub async fn set_page_chunks(
 /// `$3::uuid IS NULL OR p.workspace_id = $3` scoping exactly, joining through
 /// `pages` the same way. Keeps the query string `'static` (bind, never
 /// interpolate).
+///
+/// "Live" means referenced by a NON-ARCHIVED page (`p.archived_at IS NULL`).
+/// This is ONE definition shared with `progress`, `graph::pending_extraction`,
+/// `graph::extraction_progress` and `pages::all_page_ids` — an archived page's
+/// content is deleted as far as the user is concerned, and neither the
+/// embedding nor the extraction queue should spend a model call on it.
 pub async fn pending(
     pool: &PgPool,
     model_id: &str,
@@ -105,6 +111,7 @@ pub async fn pending(
          LEFT JOIN embeddings e
            ON e.content_hash = c.content_hash AND e.model_id = $1
          WHERE e.content_hash IS NULL
+           AND p.archived_at IS NULL
            AND ($3::uuid IS NULL OR p.workspace_id = $3)
          ORDER BY c.content_hash
          LIMIT $2",
@@ -190,7 +197,8 @@ pub async fn progress(
              SELECT DISTINCT pc.content_hash
              FROM page_chunks pc
              JOIN pages p ON p.id = pc.page_id
-             WHERE $2::uuid IS NULL OR p.workspace_id = $2
+             WHERE p.archived_at IS NULL
+               AND ($2::uuid IS NULL OR p.workspace_id = $2)
          ) pc
          LEFT JOIN embeddings e
            ON e.content_hash = pc.content_hash AND e.model_id = $1",

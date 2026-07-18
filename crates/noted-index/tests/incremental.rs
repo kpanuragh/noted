@@ -6,9 +6,11 @@ use noted_db::PgPool;
 use noted_index::extract::{
     ExtractedEdge, ExtractedEntity, Extraction, ExtractionProvider, StubExtractor,
 };
+use noted_index::extract_worker::ExtractWorker;
 use noted_index::graph_write::apply_extraction;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::sync::Arc;
 use uuid::Uuid;
 
 async fn pool() -> PgPool {
@@ -59,6 +61,35 @@ async fn set_single_live_chunk(pool: &PgPool, page_id: Uuid, text: &str) -> Stri
     hash
 }
 
+/// Drive extraction through the PRODUCTION path: `ExtractWorker::drain` polls
+/// `graph::pending_extraction`, fans each pending chunk out over
+/// `graph::workspaces_for_chunk`, and writes + marks per workspace.
+///
+/// This deliberately does NOT call `apply_extraction` directly. The crown-jewel
+/// property is only worth what it covers, and calling `apply_extraction`
+/// by hand skips the poll -> fan-out -> mark seam entirely — which is exactly
+/// where the "a workspace that joins a shared chunk after extraction never gets
+/// a graph" bug lived (the marker was keyed `(content_hash, model_id)` with no
+/// workspace, so the second workspace was never queued). A property that
+/// bypasses the queue cannot see a queue bug.
+///
+/// Cost: `StubExtractor` is pure and instant and the drains are
+/// workspace-scoped, so each call is one small `pending_extraction` poll plus
+/// the same writes the direct call made. Measured at well under a second for
+/// the whole file — the coverage is not paid for in runtime.
+async fn extract_via_worker(pool: &PgPool, ws: Uuid) {
+    ExtractWorker::new_scoped(pool.clone(), Arc::new(StubExtractor::new()), ws)
+        .drain()
+        .await
+        .unwrap();
+}
+
+/// Direct, single-workspace application — used only by the tests below that
+/// are about `replace_chunk_edges`/`resolve_entity` semantics rather than
+/// about the queue. Deliberately NOT used by the crown-jewel property (see
+/// `extract_via_worker`): the worker's fan-out would write BOTH workspaces'
+/// graphs from one drain, which is correct behaviour but would make
+/// "workspace A's edges survive workspace B extracting later" vacuous.
 async fn extract_and_apply(pool: &PgPool, ws: Uuid, hash: &str, text: &str) {
     let stub = StubExtractor::new();
     let extraction = stub.extract(text).await.unwrap();
@@ -80,9 +111,11 @@ async fn extract_and_apply(pool: &PgPool, ws: Uuid, hash: &str, text: &str) {
 ///    GLOBAL / content-addressed (no workspace column on `chunks`), so two
 ///    workspaces can share a chunk row when their text is byte-identical —
 ///    this clause is what keeps a shared chunk's edges attributed to the
-///    right tenant if that ever matters (see the report for whether it does
-///    in practice, given `replace_chunk_edges`'s delete is not itself
-///    workspace-scoped).
+///    right tenant. It is belt-and-braces rather than the sole defence:
+///    `replace_chunk_edges`'s DELETE has itself been workspace-scoped since
+///    the `edges.workspace_id` denormalisation (migration
+///    `0007_edges_workspace.sql`), so cross-tenant clobbering is prevented at
+///    the write, not merely filtered out at the read.
 async fn live_graph(pool: &PgPool, workspace_id: Uuid) -> HashSet<(String, String, String)> {
     let rows: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT DISTINCT se.name, te.name, e.relation
@@ -116,15 +149,15 @@ async fn incremental_extraction_equals_a_full_rebuild() {
 
     let p1_text_v1 = format!("Alice Bob Carol {run}");
     let h1_v1 = set_single_live_chunk(&pool, p1, &p1_text_v1).await;
-    extract_and_apply(&pool, ws_inc, &h1_v1, &p1_text_v1).await;
+    extract_via_worker(&pool, ws_inc).await;
 
     let p2_text = format!("Dave Eve {run}");
     let h2 = set_single_live_chunk(&pool, p2, &p2_text).await;
-    extract_and_apply(&pool, ws_inc, &h2, &p2_text).await;
+    extract_via_worker(&pool, ws_inc).await;
 
     let p3_text = format!("Frank Grace Heidi {run}");
     let h3 = set_single_live_chunk(&pool, p3, &p3_text).await;
-    extract_and_apply(&pool, ws_inc, &h3, &p3_text).await;
+    extract_via_worker(&pool, ws_inc).await;
 
     // Edit page 1: new text -> new content hash (chunk identity is the
     // hash). The old hash's chunk row / extraction / edges are left behind,
@@ -135,7 +168,7 @@ async fn incremental_extraction_equals_a_full_rebuild() {
         h1_v1, h1_v2,
         "editing a chunk's text must produce a new content hash"
     );
-    extract_and_apply(&pool, ws_inc, &h1_v2, &p1_text_v2).await;
+    extract_via_worker(&pool, ws_inc).await;
 
     // ---- FULL workspace: only the FINAL state, extracted once each ----
     let ws_full = workspace(&pool, "full").await;
@@ -144,11 +177,11 @@ async fn incremental_extraction_equals_a_full_rebuild() {
     let fp3 = page(&pool, ws_full, "p3").await;
 
     let fh1 = set_single_live_chunk(&pool, fp1, &p1_text_v2).await;
-    extract_and_apply(&pool, ws_full, &fh1, &p1_text_v2).await;
+    extract_via_worker(&pool, ws_full).await;
     let fh2 = set_single_live_chunk(&pool, fp2, &p2_text).await;
-    extract_and_apply(&pool, ws_full, &fh2, &p2_text).await;
+    extract_via_worker(&pool, ws_full).await;
     let fh3 = set_single_live_chunk(&pool, fp3, &p3_text).await;
-    extract_and_apply(&pool, ws_full, &fh3, &p3_text).await;
+    extract_via_worker(&pool, ws_full).await;
 
     assert_eq!(fh1, h1_v2, "same final text must hash identically");
     assert_eq!(fh2, h2, "same final text must hash identically");
@@ -353,5 +386,317 @@ async fn entities_do_not_leak_across_workspaces() {
     assert!(
         ids1.is_disjoint(&ids2),
         "entity ids must never be shared across workspaces, even for identical text"
+    );
+}
+
+/// STUB-COVERAGE GAP (a): `StubExtractor` only ever emits SINGLE-TOKEN names,
+/// so multi-word entity normalisation — the whitespace-collapsing half of
+/// `normalise_entity` — is structurally unreachable through any stub-driven
+/// test. This drives it with a hand-built `Extraction` instead: no model
+/// needed, the type is just data.
+///
+/// Two names that differ only in whitespace and case must collapse to ONE
+/// entity, and the edge between them must land on the collapsed ids.
+#[tokio::test]
+async fn multi_word_entity_names_normalise_to_one_entity_through_apply_extraction() {
+    let pool = pool().await;
+    let ws = workspace(&pool, "multiword").await;
+    let p = page(&pool, ws, "p").await;
+    let run = Uuid::new_v4();
+
+    let text = format!("multi word {run}");
+    let hash = set_single_live_chunk(&pool, p, &text).await;
+    let model = format!("multiword-model-{run}");
+
+    let a = format!("Acme   Corp\tHoldings {run}");
+    let a_again = format!("acme corp holdings {run}");
+    let b = format!("Ada   Lovelace {run}");
+
+    let ex = Extraction {
+        entities: vec![
+            ExtractedEntity {
+                name: a.clone(),
+                entity_type: "ORG".into(),
+                description: None,
+            },
+            // The SAME entity, written differently — irregular internal
+            // whitespace and different case.
+            ExtractedEntity {
+                name: a_again.clone(),
+                entity_type: "ORG".into(),
+                description: None,
+            },
+            ExtractedEntity {
+                name: b.clone(),
+                entity_type: "PERSON".into(),
+                description: None,
+            },
+        ],
+        edges: vec![ExtractedEdge {
+            // Yet another spelling of the same name, on the edge this time.
+            source: format!("ACME CORP    HOLDINGS {run}"),
+            target: b.clone(),
+            relation: "employs".into(),
+            weight: 1.0,
+        }],
+    };
+    apply_extraction(&pool, ws, &hash, &model, &ex)
+        .await
+        .unwrap();
+
+    let names: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM entities WHERE workspace_id = $1 ORDER BY name")
+            .bind(ws)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        names,
+        vec![
+            format!("acme corp holdings {run}"),
+            format!("ada lovelace {run}")
+        ],
+        "three spellings of two names must normalise to exactly two entities, \
+         lowercased with runs of whitespace collapsed to single spaces"
+    );
+
+    let edges: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT se.name, te.name, e.relation FROM edges e
+         JOIN entities se ON se.id = e.source_entity
+         JOIN entities te ON te.id = e.target_entity
+         WHERE e.workspace_id = $1 AND e.source_chunk_hash = $2 AND e.model_id = $3",
+    )
+    .bind(ws)
+    .bind(&hash)
+    .bind(&model)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        edges,
+        vec![(
+            format!("acme corp holdings {run}"),
+            format!("ada lovelace {run}"),
+            "employs".to_string()
+        )],
+        "an edge naming an entity with different whitespace must resolve to the SAME node, \
+         not create a duplicate"
+    );
+}
+
+/// STUB-COVERAGE GAP (b) + the `resolve_entity` description/type decision,
+/// exercised through `apply_extraction` rather than the repository directly.
+/// The stub always emits `description: None` and `entity_type: "CONCEPT"`, so
+/// neither the COALESCE widening nor a reclassification is reachable from it.
+#[tokio::test]
+async fn a_later_pass_can_enrich_an_entity_it_first_saw_bare() {
+    let pool = pool().await;
+    let ws = workspace(&pool, "enrich").await;
+    let p = page(&pool, ws, "p").await;
+    let run = Uuid::new_v4();
+
+    let text = format!("enrich {run}");
+    let hash = set_single_live_chunk(&pool, p, &text).await;
+    let model = format!("enrich-model-{run}");
+    let name = format!("Riemann {run}");
+
+    // Pass 1: the entity appears ONLY as an edge endpoint — apply_extraction
+    // resolves it with an unknown type and no description.
+    let pass1 = Extraction {
+        entities: vec![],
+        edges: vec![ExtractedEdge {
+            source: name.clone(),
+            target: format!("Zeta {run}"),
+            relation: "studied".into(),
+            weight: 1.0,
+        }],
+    };
+    apply_extraction(&pool, ws, &hash, &model, &pass1)
+        .await
+        .unwrap();
+
+    let (t, d): (String, Option<String>) = sqlx::query_as(
+        "SELECT entity_type, description FROM entities WHERE workspace_id = $1 AND name = $2",
+    )
+    .bind(ws)
+    .bind(format!("riemann {run}"))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (t.as_str(), d.as_deref()),
+        ("CONCEPT", None),
+        "a bare edge endpoint starts as an untyped CONCEPT placeholder"
+    );
+
+    // Pass 2: a better-informed extraction names it explicitly.
+    let pass2 = Extraction {
+        entities: vec![ExtractedEntity {
+            name: name.clone(),
+            entity_type: "PERSON".into(),
+            description: Some("a mathematician".into()),
+        }],
+        edges: vec![ExtractedEdge {
+            source: name.clone(),
+            target: format!("Zeta {run}"),
+            relation: "studied".into(),
+            weight: 1.0,
+        }],
+    };
+    apply_extraction(&pool, ws, &hash, &model, &pass2)
+        .await
+        .unwrap();
+
+    let (t, d): (String, Option<String>) = sqlx::query_as(
+        "SELECT entity_type, description FROM entities WHERE workspace_id = $1 AND name = $2",
+    )
+    .bind(ws)
+    .bind(format!("riemann {run}"))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (t.as_str(), d.as_deref()),
+        ("PERSON", Some("a mathematician")),
+        "an explicit later classification must reclassify AND widen the description"
+    );
+
+    // Pass 3 mentions it bare again — neither field may regress.
+    apply_extraction(&pool, ws, &hash, &model, &pass1)
+        .await
+        .unwrap();
+    let (t, d): (String, Option<String>) = sqlx::query_as(
+        "SELECT entity_type, description FROM entities WHERE workspace_id = $1 AND name = $2",
+    )
+    .bind(ws)
+    .bind(format!("riemann {run}"))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (t.as_str(), d.as_deref()),
+        ("PERSON", Some("a mathematician")),
+        "a later bare mention must not undo what a better-informed pass learned"
+    );
+}
+
+/// STUB-COVERAGE GAP: the stub's `weight` is always 1.0, so nothing else
+/// proves a non-default weight survives the round trip at all.
+#[tokio::test]
+async fn edge_weights_are_stored_as_given_and_replaced_on_re_extraction() {
+    let pool = pool().await;
+    let ws = workspace(&pool, "weights").await;
+    let p = page(&pool, ws, "p").await;
+    let run = Uuid::new_v4();
+
+    let text = format!("weights {run}");
+    let hash = set_single_live_chunk(&pool, p, &text).await;
+    let model = format!("weight-model-{run}");
+
+    let make = |w: f32| Extraction {
+        entities: vec![],
+        edges: vec![ExtractedEdge {
+            source: format!("Src {run}"),
+            target: format!("Dst {run}"),
+            relation: "rel".into(),
+            weight: w,
+        }],
+    };
+
+    apply_extraction(&pool, ws, &hash, &model, &make(0.25))
+        .await
+        .unwrap();
+    let w: f32 = sqlx::query_scalar(
+        "SELECT weight FROM edges WHERE workspace_id = $1 AND source_chunk_hash = $2",
+    )
+    .bind(ws)
+    .bind(&hash)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(w, 0.25, "a non-default weight must survive the write");
+
+    // Re-extraction at a different weight: the DELETE removes the old row and
+    // the new weight replaces it.
+    apply_extraction(&pool, ws, &hash, &model, &make(0.75))
+        .await
+        .unwrap();
+    let rows: Vec<f32> = sqlx::query_scalar(
+        "SELECT weight FROM edges WHERE workspace_id = $1 AND source_chunk_hash = $2",
+    )
+    .bind(ws)
+    .bind(&hash)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        vec![0.75],
+        "re-extraction must leave exactly one edge, at the new weight"
+    );
+}
+
+/// DOCUMENTS A KNOWN GAP, it does not assert a desirable property.
+///
+/// `edges` cascade away when their source chunk is deleted, but `entities`
+/// rows are never deleted by anything. After an edit orphans a chunk, the
+/// entities that chunk introduced survive with ZERO live edges. Nothing reaps
+/// them.
+///
+/// This is deliberately NOT fixed in M2a — a reaper is a real design decision
+/// (what about an entity a user has annotated? is "no live edges" really
+/// death, or just a temporarily-empty node?) and belongs with the clustering
+/// work that first cares. It IS a prerequisite for M2b-1: community detection
+/// clusters over `entities`, and would happily cluster these dead nodes into
+/// communities that describe content no live page contains. See
+/// `.superpowers/sdd/progress.md`.
+///
+/// If this test ever FAILS because the orphan is gone, that is good news: a
+/// reaper landed. Delete the test and the M2b-1 note together.
+#[tokio::test]
+async fn orphan_entities_survive_an_edit_with_zero_live_edges_a_known_m2b_gap() {
+    let pool = pool().await;
+    let ws = workspace(&pool, "orphan").await;
+    let p = page(&pool, ws, "p").await;
+    let run = Uuid::new_v4();
+
+    // v1 mentions Carol; v2 does not.
+    let v1 = format!("Alice Bob Carol{run}");
+    let h1 = set_single_live_chunk(&pool, p, &v1).await;
+    extract_via_worker(&pool, ws).await;
+
+    let v2 = format!("Alice Bob Zara{run}");
+    let h2 = set_single_live_chunk(&pool, p, &v2).await;
+    assert_ne!(h1, h2);
+    extract_via_worker(&pool, ws).await;
+
+    let carol = format!("carol{}", run).to_lowercase();
+    let live_edges: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM edges e
+         JOIN entities en ON en.id = e.source_entity OR en.id = e.target_entity
+         JOIN page_chunks pc ON pc.content_hash = e.source_chunk_hash
+         WHERE en.workspace_id = $1 AND en.name = $2",
+    )
+    .bind(ws)
+    .bind(&carol)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        live_edges, 0,
+        "sanity: after the edit, the orphaned entity must have no edges from any LIVE chunk"
+    );
+
+    let still_there: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM entities WHERE workspace_id = $1 AND name = $2")
+            .bind(ws)
+            .bind(&carol)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        still_there, 1,
+        "CURRENT BEHAVIOUR (not an endorsement): nothing deletes entities, so the orphan \
+         persists. M2b's clustering would treat it as a live graph node."
     );
 }

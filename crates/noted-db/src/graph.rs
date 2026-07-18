@@ -15,22 +15,52 @@ use uuid::Uuid;
 /// normalise; it treats `name` as the literal resolution key, scoped to
 /// `(workspace_id, name)`.
 ///
-/// If the entity already exists, its `description` is kept unless the new
-/// call supplies one (`COALESCE(EXCLUDED.description, entities.description)`)
-/// — a later extraction pass with no description must not blank out one an
-/// earlier pass wrote.
+/// # Conflict semantics (a DECISION, not an accident)
+///
+/// `description` — WIDEN ONLY. Kept unless the new call supplies one
+/// (`COALESCE(EXCLUDED.description, entities.description)`): a later
+/// extraction pass with no description must not blank out one an earlier pass
+/// wrote.
+///
+/// `entity_type` — LAST EXPLICIT WRITE WINS, which is why this parameter is
+/// an `Option`, not a bare `&str`:
+///
+///   * `Some(t)` is an EXPLICIT classification, made by a pass that actually
+///     looked at the entity. It OVERWRITES. Extraction genuinely reclassifies
+///     — an entity first seen as a bare noun ("acme") and later understood as
+///     an organisation should become `ORG`. Dropping that (the old behaviour,
+///     which COALESCEd only `description` and silently ignored `entity_type`
+///     on conflict) froze every entity at whatever its first, least-informed
+///     mention guessed, with no way to ever correct it short of a manual
+///     UPDATE.
+///
+///   * `None` means "this node exists, I do not know what it is" — how
+///     `noted_index::graph_write::apply_extraction` resolves an entity that
+///     appeared only as an EDGE ENDPOINT, with no `ExtractedEntity` describing
+///     it. It must NOT overwrite: an unknown type is not evidence. Collapsing
+///     this case into `Some("CONCEPT")` and calling it last-write-wins would
+///     mean every passing mention of a known `PERSON` downgraded it back to
+///     the placeholder — reclassification working in exactly the wrong
+///     direction. On INSERT (nothing to preserve) `None` falls back to
+///     `CONCEPT`, the same default a bare mention has always received.
+///
+/// Note the `DO UPDATE` clause reads `$3` directly rather than
+/// `EXCLUDED.entity_type`: `EXCLUDED` holds the already-COALESCEd insert
+/// value, so it could never be `NULL` and the "unknown" case would be
+/// indistinguishable from an explicit `CONCEPT`.
 pub async fn resolve_entity(
     pool: &sqlx::PgPool,
     workspace_id: Uuid,
     name: &str,
-    entity_type: &str,
+    entity_type: Option<&str>,
     description: Option<&str>,
 ) -> Result<Uuid, sqlx::Error> {
     sqlx::query_scalar(
         "INSERT INTO entities (workspace_id, name, entity_type, description)
-         VALUES ($1, $2, $3, $4)
+         VALUES ($1, $2, COALESCE($3, 'CONCEPT'), $4)
          ON CONFLICT (workspace_id, name) DO UPDATE
-           SET description = COALESCE(EXCLUDED.description, entities.description)
+           SET entity_type = COALESCE($3, entities.entity_type),
+               description = COALESCE(EXCLUDED.description, entities.description)
          RETURNING id",
     )
     .bind(workspace_id)
@@ -41,14 +71,28 @@ pub async fn resolve_entity(
     .await
 }
 
-/// Replace one chunk's extracted edges for one model, IN ONE WORKSPACE.
+/// Replace one chunk's extracted edges for one model, IN ONE WORKSPACE, and
+/// mark the chunk extracted for that workspace — atomically.
 ///
-/// Does NOT write the `chunk_extractions` marker — see `mark_extracted`'s
-/// doc comment for why that is now a separate call. Runs in ONE transaction:
-/// DELETE the chunk's existing edges for this model **within
-/// `workspace_id`**, then insert the new set. A crash mid-write rolls the
-/// whole thing back, so this workspace's edges for this chunk are always
-/// either fully replaced or untouched — never half.
+/// Runs in ONE transaction: DELETE this workspace's existing edges for this
+/// chunk+model, INSERT the new set, then write the `(workspace_id,
+/// content_hash, model_id)` row in `chunk_extractions`. A crash mid-write
+/// rolls the whole thing back, so a workspace's graph for a chunk and its
+/// "done" marker always agree — the chunk is either fully extracted for this
+/// workspace or still fully pending, never marked-but-empty.
+///
+/// The marker lives INSIDE this transaction because it is per-workspace, the
+/// same granularity as the edge write. (It was briefly a separate
+/// `mark_extracted` call, written once after every workspace's edges had
+/// landed. That existed only to work around a marker keyed on
+/// `(content_hash, model_id)` with no workspace column: marking inside the
+/// transaction would then have removed a SHARED chunk from the queue as soon
+/// as the FIRST workspace was written, stranding the rest. Migration
+/// `0008_chunk_extractions_workspace.sql` gave the marker a `workspace_id`,
+/// which removes that constraint entirely — and makes the transactional
+/// version strictly safer, since a crash between workspaces now leaves the
+/// unwritten ones legitimately pending instead of relying on the caller to
+/// defer a global marker correctly.)
 ///
 /// The DELETE is scoped by `workspace_id` as well as `(source_chunk_hash,
 /// model_id)`. This matters because `source_chunk_hash` is a GLOBAL,
@@ -131,44 +175,24 @@ pub async fn replace_chunk_edges(
         .await?;
     }
 
-    tx.commit().await
-}
-
-/// Mark a chunk extracted for `model_id` — the thing that removes it from
-/// `pending_extraction`.
-///
-/// Split out of `replace_chunk_edges` (which used to write this marker
-/// itself, transactionally, right after the edge insert) because of the
-/// workspace subtlety: `content_hash` is a GLOBAL, content-addressed key
-/// (M1b) that can be referenced by live pages in MULTIPLE workspaces, but
-/// `chunk_extractions` has no `workspace_id` column — the marker is
-/// necessarily all-or-nothing per chunk, not per workspace. If
-/// `replace_chunk_edges` still set it, the FIRST workspace to extract a
-/// shared chunk would remove it from the queue before the other workspaces
-/// referencing it ever got their own graph written, and a crash between
-/// workspaces would strand them unextracted forever with no way back into
-/// the queue.
-///
-/// The correct order (enforced by the caller, `noted-index`'s
-/// `ExtractWorker`): extract the chunk's text ONCE, call
-/// `replace_chunk_edges` once per workspace that references it, and only
-/// after ALL of those succeed, call `mark_extracted` ONCE. `ON CONFLICT DO
-/// NOTHING` keeps a second call (e.g. a retry after the marker already
-/// landed) a no-op rather than an error.
-pub async fn mark_extracted(
-    pool: &sqlx::PgPool,
-    content_hash: &str,
-    model_id: &str,
-) -> Result<(), sqlx::Error> {
+    // The marker, in the SAME transaction as the edges above. `ON CONFLICT DO
+    // NOTHING` keeps a re-extraction (which legitimately rewrites the edges of
+    // an already-marked chunk) a no-op on the marker rather than an error;
+    // `extracted_at` therefore records the FIRST extraction for this
+    // workspace, which is the useful reading — "since when has this workspace
+    // had a graph for this chunk".
     sqlx::query(
-        "INSERT INTO chunk_extractions (content_hash, model_id) VALUES ($1, $2)
+        "INSERT INTO chunk_extractions (workspace_id, content_hash, model_id)
+         VALUES ($1, $2, $3)
          ON CONFLICT DO NOTHING",
     )
-    .bind(content_hash)
+    .bind(workspace_id)
+    .bind(chunk_hash)
     .bind(model_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
-    Ok(())
+
+    tx.commit().await
 }
 
 /// Distinct workspaces whose LIVE pages currently reference `content_hash`.
@@ -179,6 +203,13 @@ pub async fn mark_extracted(
 /// per-workspace — see `resolve_entity`'s docs). The extraction worker calls
 /// this once per pending chunk to fan its single `extract()` call out to
 /// every workspace that needs the result written.
+///
+/// "Live" here means EXACTLY what `pending_extraction` means by it, archived
+/// pages included (i.e. excluded): a page whose `archived_at` is set is dead
+/// content and does not earn a graph. The two definitions MUST agree — if
+/// this returned fewer workspaces than the queue considers live, the chunk
+/// would be polled forever and never marked for the missing workspace, and
+/// `drain` would spin until `MAX_CONSECUTIVE_FAILURES`.
 pub async fn workspaces_for_chunk(
     pool: &sqlx::PgPool,
     content_hash: &str,
@@ -187,7 +218,8 @@ pub async fn workspaces_for_chunk(
         "SELECT DISTINCT p.workspace_id
          FROM page_chunks pc
          JOIN pages p ON p.id = pc.page_id
-         WHERE pc.content_hash = $1",
+         WHERE pc.content_hash = $1
+           AND p.archived_at IS NULL",
     )
     .bind(content_hash)
     .fetch_all(pool)
@@ -209,6 +241,17 @@ pub async fn workspaces_for_chunk(
 /// p.workspace_id = $2` scoping exactly, joining through `pages` the same
 /// way. Keeps the query string `'static` (bind, never interpolate) and the
 /// existing `ORDER BY`/set-difference shape untouched.
+///
+/// The marker join is scoped by `ce.workspace_id = p.workspace_id`, not by
+/// `content_hash`/`model_id` alone. That is what makes the unit of work
+/// "(chunk, workspace)" rather than "chunk": a chunk stays pending while ANY
+/// workspace with a live page referencing it still lacks its own graph, so a
+/// workspace that adopts an already-extracted shared chunk later is queued
+/// like any other. See `0008_chunk_extractions_workspace.sql`.
+///
+/// "Live" excludes archived pages (`p.archived_at IS NULL`), matching
+/// `chunks::pending` and `workspaces_for_chunk`. One definition of live
+/// across both queues.
 pub async fn pending_extraction(
     pool: &sqlx::PgPool,
     model_id: &str,
@@ -221,8 +264,11 @@ pub async fn pending_extraction(
          JOIN pages p ON p.id = pc.page_id
          JOIN chunks c ON c.content_hash = pc.content_hash
          LEFT JOIN chunk_extractions ce
-           ON ce.content_hash = c.content_hash AND ce.model_id = $1
+           ON ce.content_hash = c.content_hash
+          AND ce.model_id = $1
+          AND ce.workspace_id = p.workspace_id
          WHERE ce.content_hash IS NULL
+           AND p.archived_at IS NULL
            AND ($3::uuid IS NULL OR p.workspace_id = $3)
          ORDER BY c.content_hash
          LIMIT $2",
@@ -238,6 +284,18 @@ pub async fn pending_extraction(
 /// `chunks::progress`'s signature and semantics exactly — see its docs for
 /// why `workspace_id: None` vs `Some` matters and why counting through
 /// `page_chunks` keeps orphaned chunks from dragging the denominator down.
+///
+/// The unit counted is a **(chunk, workspace) pair**, matching
+/// `pending_extraction`'s unit of work. For a scoped call (`Some(id)`) this
+/// is indistinguishable from counting chunks. For the unscoped CLI call it
+/// means a chunk shared by two workspaces counts TWICE — correct, because it
+/// is two graphs to write, and it is what keeps `extracted == total`
+/// reachable once the queue is drained. Counting it once could report 100%
+/// while a second workspace still had no graph.
+///
+/// Archived pages are excluded, matching `pending_extraction` — otherwise a
+/// chunk only reachable from archived pages would sit in the denominator
+/// forever, un-drainable, pinning progress below 100%.
 pub async fn extraction_progress(
     pool: &sqlx::PgPool,
     model_id: &str,
@@ -248,13 +306,16 @@ pub async fn extraction_progress(
            count(*) FILTER (WHERE ce.content_hash IS NOT NULL) AS extracted,
            count(*)                                             AS total
          FROM (
-             SELECT DISTINCT pc.content_hash
+             SELECT DISTINCT pc.content_hash, p.workspace_id
              FROM page_chunks pc
              JOIN pages p ON p.id = pc.page_id
-             WHERE $2::uuid IS NULL OR p.workspace_id = $2
+             WHERE p.archived_at IS NULL
+               AND ($2::uuid IS NULL OR p.workspace_id = $2)
          ) pc
          LEFT JOIN chunk_extractions ce
-           ON ce.content_hash = pc.content_hash AND ce.model_id = $1",
+           ON ce.content_hash = pc.content_hash
+          AND ce.model_id = $1
+          AND ce.workspace_id = pc.workspace_id",
     )
     .bind(model_id)
     .bind(workspace_id)

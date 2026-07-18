@@ -24,12 +24,16 @@ use uuid::Uuid;
 /// didn't also appear in `ex.entities` (a sloppy provider, or a future
 /// LLM-backed one that under-lists entities relative to edges) — DECISION:
 /// resolve it too, on demand, rather than silently dropping the edge. It is
-/// resolved with `entity_type = "CONCEPT"` and no description, the same
-/// defaulting a bare mention would get; a later extraction pass that DOES
-/// list it explicitly can still enrich its type/description, since
-/// `resolve_entity` only ever widens (`COALESCE`) rather than overwrites.
-/// Dropping the edge instead would silently lose provenance the extractor
-/// clearly intended to record; resolving is the more conservative choice.
+/// resolved with an UNKNOWN entity type (`None`) and no description, rather
+/// than dropping the edge. Passing `None` — not `Some("CONCEPT")` — is
+/// load-bearing: `resolve_entity` treats an explicit type as a
+/// reclassification that overwrites, so claiming "CONCEPT" here would let a
+/// passing edge-endpoint mention DOWNGRADE an entity a previous pass had
+/// correctly typed as `PERSON`/`ORG`. `None` says "exists, type unknown",
+/// which inserts the `CONCEPT` default for a brand-new node and leaves an
+/// existing node's type alone. Dropping the edge instead would silently lose
+/// provenance the extractor clearly intended to record; resolving is the more
+/// conservative choice.
 pub async fn apply_extraction(
     pool: &sqlx::PgPool,
     workspace_id: Uuid,
@@ -45,7 +49,7 @@ pub async fn apply_extraction(
             pool,
             workspace_id,
             &normalised,
-            &entity.entity_type,
+            Some(entity.entity_type.as_str()),
             entity.description.as_deref(),
         )
         .await?;
@@ -60,8 +64,8 @@ pub async fn apply_extraction(
         let source_id = match ids.get(&source_name) {
             Some(id) => *id,
             None => {
-                let id = graph::resolve_entity(pool, workspace_id, &source_name, "CONCEPT", None)
-                    .await?;
+                let id =
+                    graph::resolve_entity(pool, workspace_id, &source_name, None, None).await?;
                 ids.insert(source_name.clone(), id);
                 id
             }
@@ -69,8 +73,8 @@ pub async fn apply_extraction(
         let target_id = match ids.get(&target_name) {
             Some(id) => *id,
             None => {
-                let id = graph::resolve_entity(pool, workspace_id, &target_name, "CONCEPT", None)
-                    .await?;
+                let id =
+                    graph::resolve_entity(pool, workspace_id, &target_name, None, None).await?;
                 ids.insert(target_name.clone(), id);
                 id
             }

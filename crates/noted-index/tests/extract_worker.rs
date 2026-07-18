@@ -1,7 +1,7 @@
 //! Mirrors `crates/noted-index/tests/worker.rs` (M1b's embedding worker
 //! tests) for the extraction worker. Stub-driven throughout — no LLM, no
 //! network. Every provider here is deterministic and instant.
-use noted_index::extract::{Extraction, ExtractError, ExtractionProvider, StubExtractor};
+use noted_index::extract::{ExtractError, Extraction, ExtractionProvider, StubExtractor};
 use noted_index::extract_worker::{BATCH_SIZE, ExtractWorker, ExtractWorkerError};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -148,7 +148,10 @@ async fn after_drain_extraction_progress_reaches_100_percent() {
         extracted, total,
         "extraction_progress must read 100% after a full drain"
     );
-    assert!(total >= 4, "progress must count the seeded chunks, got {total}");
+    assert!(
+        total >= 4,
+        "progress must count the seeded chunks, got {total}"
+    );
 }
 
 /// Crash-safety, proven by a real race: seed MORE than one batch's worth,
@@ -226,10 +229,9 @@ async fn a_poison_chunk_does_not_block_its_neighbours_and_drain_terminates() {
     });
     let w = ExtractWorker::new_scoped(pool.clone(), provider, ws);
 
-    let err = w
-        .drain()
-        .await
-        .expect_err("a chunk that can never be extracted must surface as an error, not a clean exit");
+    let err = w.drain().await.expect_err(
+        "a chunk that can never be extracted must surface as an error, not a clean exit",
+    );
     assert!(
         matches!(err, ExtractWorkerError::Stalled { .. }),
         "a stalled drain must say so, got: {err}"
@@ -314,7 +316,10 @@ async fn a_chunk_shared_across_workspaces_is_extracted_into_both_graphs() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert!(a_edges > 0, "workspace A must have its own edges from the shared chunk");
+    assert!(
+        a_edges > 0,
+        "workspace A must have its own edges from the shared chunk"
+    );
 
     let b_edges: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM edges e
@@ -327,7 +332,10 @@ async fn a_chunk_shared_across_workspaces_is_extracted_into_both_graphs() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert!(b_edges > 0, "workspace B must have its own edges from the shared chunk");
+    assert!(
+        b_edges > 0,
+        "workspace B must have its own edges from the shared chunk"
+    );
 
     let marker_count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM chunk_extractions WHERE content_hash = $1 AND model_id = $2",
@@ -338,7 +346,112 @@ async fn a_chunk_shared_across_workspaces_is_extracted_into_both_graphs() {
     .await
     .unwrap();
     assert_eq!(
-        marker_count, 1,
-        "chunk_extractions has no workspace column — the marker must be written exactly once"
+        marker_count, 2,
+        "the marker is per-workspace: each of the two workspaces referencing this shared chunk \
+         must have its own chunk_extractions row"
     );
+}
+
+/// The LATE-JOINER case, and the one the test above cannot see.
+///
+/// `a_chunk_shared_across_workspaces_is_extracted_into_both_graphs` wires BOTH
+/// pages up before draining, so a single `workspaces_for_chunk` fan-out covers
+/// both. Real workspaces do not appear simultaneously: workspace A drains to
+/// completion, and only LATER does workspace B create a page whose text is
+/// byte-identical. The chunk is content-addressed, so B's page reuses A's
+/// chunk row — and if the extraction marker were keyed on `(content_hash,
+/// model_id)` alone, that chunk would already be marked done and B would never
+/// be queued. B would silently get NO graph while `extraction_progress(ws_b)`
+/// cheerfully reported 1/1.
+///
+/// This is the invariant "a chunk shared across workspaces extracts into EACH
+/// workspace's graph" applied across TIME, not just across one poll.
+#[tokio::test]
+async fn a_workspace_that_joins_a_shared_chunk_after_extraction_still_gets_a_graph() {
+    let (pool, ws_a, page_a) = setup().await;
+    let (_, ws_b, page_b) = setup().await;
+    let run = Uuid::new_v4();
+
+    let text = format!("Late Joiner {run}");
+    let hash = format!("ewh-late-{run}");
+    noted_db::chunks::upsert(&pool, &[(hash.clone(), text, 10)])
+        .await
+        .unwrap();
+
+    // ---- Phase 1: workspace A alone, drained to completion ----
+    noted_db::chunks::set_page_chunks(&pool, page_a, &[hash.clone()])
+        .await
+        .unwrap();
+    let provider = Arc::new(CountingExtractor::new(run.to_string()));
+    let model_id = provider.model_id().to_string();
+    ExtractWorker::new_scoped(pool.clone(), provider.clone(), ws_a)
+        .drain()
+        .await
+        .unwrap();
+
+    let (extracted_a, total_a) = noted_db::graph::extraction_progress(&pool, &model_id, Some(ws_a))
+        .await
+        .unwrap();
+    assert_eq!(
+        (extracted_a, total_a),
+        (1, 1),
+        "sanity: workspace A must be fully extracted before B joins"
+    );
+    let a_edges = edge_set(&pool, ws_a, &hash, &model_id).await;
+    assert!(
+        !a_edges.is_empty(),
+        "sanity: workspace A must have edges from its own extraction"
+    );
+
+    // ---- Phase 2: workspace B creates a page with byte-identical text ----
+    // It reuses the very same content-addressed chunk row.
+    noted_db::chunks::set_page_chunks(&pool, page_b, &[hash.clone()])
+        .await
+        .unwrap();
+
+    let (extracted_b_before, total_b_before) =
+        noted_db::graph::extraction_progress(&pool, &model_id, Some(ws_b))
+            .await
+            .unwrap();
+    assert_eq!(
+        (extracted_b_before, total_b_before),
+        (0, 1),
+        "workspace B has one live chunk and has extracted NOTHING; reporting it as already \
+         extracted is the silent-no-graph failure"
+    );
+
+    ExtractWorker::new_scoped(pool.clone(), provider.clone(), ws_b)
+        .drain()
+        .await
+        .unwrap();
+
+    let b_edges = edge_set(&pool, ws_b, &hash, &model_id).await;
+    assert_eq!(
+        b_edges, a_edges,
+        "workspace B must end up with the SAME edge set workspace A has for the shared chunk"
+    );
+}
+
+/// `(source_name, target_name, relation)` for one workspace's edges from one
+/// chunk under one model — the comparable shape of a per-workspace graph.
+async fn edge_set(
+    pool: &noted_db::PgPool,
+    ws: Uuid,
+    hash: &str,
+    model_id: &str,
+) -> std::collections::BTreeSet<(String, String, String)> {
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT se.name, te.name, e.relation
+         FROM edges e
+         JOIN entities se ON se.id = e.source_entity
+         JOIN entities te ON te.id = e.target_entity
+         WHERE e.workspace_id = $1 AND e.source_chunk_hash = $2 AND e.model_id = $3",
+    )
+    .bind(ws)
+    .bind(hash)
+    .bind(model_id)
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    rows.into_iter().collect()
 }

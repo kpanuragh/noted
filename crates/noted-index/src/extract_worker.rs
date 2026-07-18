@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::extract::{ExtractionProvider, Extraction};
+use crate::extract::{Extraction, ExtractionProvider};
 use crate::graph_write::apply_extraction;
 
 /// How many pending chunks to poll per round trip. Extraction is one
@@ -61,7 +61,7 @@ pub struct ExtractWorker {
     provider: Arc<dyn ExtractionProvider>,
     /// Scopes `pending_extraction`'s poll. `None` (the default via `new`)
     /// drains the whole instance — what the CLI wants. `Some(id)` (via
-    /// `new_scoped`/`with_workspace`) restricts the queue to chunks
+    /// `new_scoped`) restricts the queue to chunks
     /// referenced by a live page in that one workspace — needed so a
     /// per-tenant extraction run does not also pick up every other
     /// workspace's pending chunks. See `noted_db::graph::pending_extraction`.
@@ -108,17 +108,18 @@ impl ExtractWorker {
     ///      each one needs its own copy of the extraction written.
     ///   3. Apply the SAME extraction to EACH workspace's graph
     ///      (`apply_extraction`, which resolves entities/edges and calls
-    ///      `replace_chunk_edges` — scoped to that one workspace).
-    ///   4. Only after every workspace above has succeeded, mark the chunk
-    ///      extracted ONCE (`graph::mark_extracted`). See that function's doc
-    ///      comment for why the marker is a separate call from step 3, and
-    ///      why it must come last: `chunk_extractions` has no workspace
-    ///      column, so marking early (or marking per-workspace) would let the
-    ///      chunk leave the queue before every workspace's graph was
-    ///      written — a crash between workspaces would then strand the
-    ///      later ones unextracted with no way back into the queue.
+    ///      `replace_chunk_edges` — scoped to that one workspace, and which
+    ///      writes that workspace's `chunk_extractions` marker in the SAME
+    ///      transaction as its edges).
     ///
-    /// A failure in step 2-4 (a `sqlx::Error`) is a DATABASE failure, not a
+    /// There is deliberately no separate "mark extracted" step. The marker is
+    /// per-workspace (migration `0008_chunk_extractions_workspace.sql`), so it
+    /// belongs inside each workspace's edge transaction: a crash partway
+    /// through the loop leaves the workspaces already written marked and the
+    /// rest legitimately pending, and the next poll picks up exactly the
+    /// remainder. Nothing is stranded and nothing is double-written.
+    ///
+    /// A failure in step 2-3 (a `sqlx::Error`) is a DATABASE failure, not a
     /// poison chunk — like `worker.rs`'s storage writes, it propagates
     /// immediately rather than being swallowed, because retrying past a dead
     /// database would just silently lose work rather than isolate a bad
@@ -164,11 +165,16 @@ impl ExtractWorker {
             }
 
             for workspace_id in &workspaces {
-                apply_extraction(&self.pool, *workspace_id, content_hash, &model_id, &extraction)
-                    .await?;
+                apply_extraction(
+                    &self.pool,
+                    *workspace_id,
+                    content_hash,
+                    &model_id,
+                    &extraction,
+                )
+                .await?;
             }
 
-            noted_db::graph::mark_extracted(&self.pool, content_hash, &model_id).await?;
             succeeded += 1;
         }
 

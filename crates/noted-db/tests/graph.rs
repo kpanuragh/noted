@@ -56,10 +56,10 @@ async fn resolve_entity_is_idempotent_by_normalised_name() {
     let (pool, ws, _page) = setup().await;
     let (_, ws2, _page2) = setup().await;
 
-    let id1 = graph::resolve_entity(&pool, ws, &normalise("Postgres"), "CONCEPT", None)
+    let id1 = graph::resolve_entity(&pool, ws, &normalise("Postgres"), Some("CONCEPT"), None)
         .await
         .unwrap();
-    let id2 = graph::resolve_entity(&pool, ws, &normalise("  postgres "), "CONCEPT", None)
+    let id2 = graph::resolve_entity(&pool, ws, &normalise("  postgres "), Some("CONCEPT"), None)
         .await
         .unwrap();
     assert_eq!(
@@ -67,7 +67,7 @@ async fn resolve_entity_is_idempotent_by_normalised_name() {
         "the same normalised name in the same workspace must resolve to the same entity"
     );
 
-    let id3 = graph::resolve_entity(&pool, ws2, &normalise("Postgres"), "CONCEPT", None)
+    let id3 = graph::resolve_entity(&pool, ws2, &normalise("Postgres"), Some("CONCEPT"), None)
         .await
         .unwrap();
     assert_ne!(
@@ -77,21 +77,29 @@ async fn resolve_entity_is_idempotent_by_normalised_name() {
 }
 
 #[tokio::test]
-async fn replace_chunk_edges_writes_edges_but_does_not_mark_extracted() {
+async fn replace_chunk_edges_writes_edges_and_marks_extracted_for_that_workspace() {
     let (pool, ws, page) = setup().await;
     let model = format!("model-{}", uuid::Uuid::new_v4());
     let h = format!("hash-{}", uuid::Uuid::new_v4());
     live_chunk(&pool, page, &h, "Alice met Bob").await;
 
-    let alice = graph::resolve_entity(&pool, ws, "alice", "PERSON", None)
+    let alice = graph::resolve_entity(&pool, ws, "alice", Some("PERSON"), None)
         .await
         .unwrap();
-    let bob = graph::resolve_entity(&pool, ws, "bob", "PERSON", None)
+    let bob = graph::resolve_entity(&pool, ws, "bob", Some("PERSON"), None)
         .await
         .unwrap();
-    let carol = graph::resolve_entity(&pool, ws, "carol", "PERSON", None)
+    let carol = graph::resolve_entity(&pool, ws, "carol", Some("PERSON"), None)
         .await
         .unwrap();
+
+    let pending_before = graph::pending_extraction(&pool, &model, Some(ws), 1_000_000)
+        .await
+        .unwrap();
+    assert!(
+        pending_before.iter().any(|(hash, _)| hash == &h),
+        "sanity: an unextracted live chunk must start out pending"
+    );
 
     let edges = vec![
         (alice, bob, "met".to_string(), 1.0f32),
@@ -111,72 +119,68 @@ async fn replace_chunk_edges_writes_edges_but_does_not_mark_extracted() {
     .unwrap();
     assert_eq!(n, 2, "both edges must be written");
 
-    // The marker is now a SEPARATE call (`mark_extracted`) — see its doc
-    // comment. `replace_chunk_edges` alone must not set it: a chunk shared
-    // across workspaces needs every referencing workspace's edges written
-    // before it is truly "done", and the marker has no workspace column to
-    // make that partial.
+    // The marker is written in the SAME transaction as the edges, scoped to
+    // THIS workspace (migration 0008). Edges and marker commit together, so a
+    // chunk is never marked-but-graphless for a workspace.
     let extracted: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM chunk_extractions WHERE content_hash = $1 AND model_id = $2",
+        "SELECT count(*) FROM chunk_extractions
+         WHERE workspace_id = $1 AND content_hash = $2 AND model_id = $3",
     )
+    .bind(ws)
     .bind(&h)
     .bind(&model)
     .fetch_one(&pool)
     .await
     .unwrap();
     assert_eq!(
-        extracted, 0,
-        "replace_chunk_edges alone must not set the chunk_extractions marker"
+        extracted, 1,
+        "replace_chunk_edges must mark the chunk extracted for this workspace"
     );
-
-    let pending = graph::pending_extraction(&pool, &model, Some(ws), 1_000_000)
-        .await
-        .unwrap();
-    assert!(
-        pending.iter().any(|(hash, _)| hash == &h),
-        "a chunk must stay pending until mark_extracted is called explicitly"
-    );
-
-    graph::mark_extracted(&pool, &h, &model).await.unwrap();
-
-    let extracted_after: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM chunk_extractions WHERE content_hash = $1 AND model_id = $2",
-    )
-    .bind(&h)
-    .bind(&model)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(extracted_after, 1, "mark_extracted must set the marker");
 
     let pending_after = graph::pending_extraction(&pool, &model, Some(ws), 1_000_000)
         .await
         .unwrap();
     assert!(
         !pending_after.iter().any(|(hash, _)| hash == &h),
-        "after mark_extracted, the chunk must not still be pending"
+        "once its edges and marker have committed, the chunk must leave the queue"
     );
 }
 
+/// A second `replace_chunk_edges` for the same (workspace, chunk, model) — a
+/// re-extraction — must rewrite the edges without erroring on the marker it
+/// already wrote.
 #[tokio::test]
-async fn mark_extracted_is_idempotent() {
-    let (pool, _ws, page) = setup().await;
+async fn replace_chunk_edges_is_re_runnable_against_its_own_marker() {
+    let (pool, ws, page) = setup().await;
     let model = format!("model-{}", uuid::Uuid::new_v4());
     let h = format!("hash-{}", uuid::Uuid::new_v4());
     live_chunk(&pool, page, &h, "idempotent marker text").await;
 
-    graph::mark_extracted(&pool, &h, &model).await.unwrap();
-    graph::mark_extracted(&pool, &h, &model).await.unwrap();
+    let e1 = graph::resolve_entity(&pool, ws, "m1", Some("CONCEPT"), None)
+        .await
+        .unwrap();
+    let e2 = graph::resolve_entity(&pool, ws, "m2", Some("CONCEPT"), None)
+        .await
+        .unwrap();
+
+    graph::replace_chunk_edges(&pool, ws, &h, &model, &[(e1, e2, "r".into(), 1.0)])
+        .await
+        .unwrap();
+    graph::replace_chunk_edges(&pool, ws, &h, &model, &[(e1, e2, "r".into(), 1.0)])
+        .await
+        .unwrap();
 
     let n: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM chunk_extractions WHERE content_hash = $1 AND model_id = $2",
+        "SELECT count(*) FROM chunk_extractions
+         WHERE workspace_id = $1 AND content_hash = $2 AND model_id = $3",
     )
+    .bind(ws)
     .bind(&h)
     .bind(&model)
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(n, 1, "calling mark_extracted twice must not double-insert");
+    assert_eq!(n, 1, "re-extraction must not double-insert the marker");
 }
 
 #[tokio::test]
@@ -216,24 +220,42 @@ async fn replace_chunk_edges_only_touches_its_own_chunk() {
     live_chunk(&pool, page, &h_a, "chunk a text").await;
     live_chunk(&pool, page, &h_b, "chunk b text").await;
 
-    let e1 = graph::resolve_entity(&pool, ws, "e1", "CONCEPT", None)
+    let e1 = graph::resolve_entity(&pool, ws, "e1", Some("CONCEPT"), None)
         .await
         .unwrap();
-    let e2 = graph::resolve_entity(&pool, ws, "e2", "CONCEPT", None)
+    let e2 = graph::resolve_entity(&pool, ws, "e2", Some("CONCEPT"), None)
         .await
         .unwrap();
 
-    graph::replace_chunk_edges(&pool, ws, &h_a, &model, &[(e1, e2, "rel-a".to_string(), 1.0)])
-        .await
-        .unwrap();
-    graph::replace_chunk_edges(&pool, ws, &h_b, &model, &[(e1, e2, "rel-b".to_string(), 1.0)])
-        .await
-        .unwrap();
+    graph::replace_chunk_edges(
+        &pool,
+        ws,
+        &h_a,
+        &model,
+        &[(e1, e2, "rel-a".to_string(), 1.0)],
+    )
+    .await
+    .unwrap();
+    graph::replace_chunk_edges(
+        &pool,
+        ws,
+        &h_b,
+        &model,
+        &[(e1, e2, "rel-b".to_string(), 1.0)],
+    )
+    .await
+    .unwrap();
 
     // Replacing A's edges again must not touch B's.
-    graph::replace_chunk_edges(&pool, ws, &h_a, &model, &[(e2, e1, "rel-a2".to_string(), 1.0)])
-        .await
-        .unwrap();
+    graph::replace_chunk_edges(
+        &pool,
+        ws,
+        &h_a,
+        &model,
+        &[(e2, e1, "rel-a2".to_string(), 1.0)],
+    )
+    .await
+    .unwrap();
 
     let b_edges: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM edges WHERE source_chunk_hash = $1 AND model_id = $2",
@@ -278,7 +300,6 @@ async fn pending_extraction_returns_live_chunks_with_no_extraction() {
     graph::replace_chunk_edges(&pool, ws, &h, &model_a, &[])
         .await
         .unwrap();
-    graph::mark_extracted(&pool, &h, &model_a).await.unwrap();
 
     let after = graph::pending_extraction(&pool, &model_a, Some(ws), 1_000_000)
         .await
@@ -304,10 +325,10 @@ async fn replace_chunk_edges_is_idempotent_on_a_duplicate_edge() {
     let h = format!("hash-{}", uuid::Uuid::new_v4());
     live_chunk(&pool, page, &h, "dup edge text").await;
 
-    let e1 = graph::resolve_entity(&pool, ws, "dup1", "CONCEPT", None)
+    let e1 = graph::resolve_entity(&pool, ws, "dup1", Some("CONCEPT"), None)
         .await
         .unwrap();
-    let e2 = graph::resolve_entity(&pool, ws, "dup2", "CONCEPT", None)
+    let e2 = graph::resolve_entity(&pool, ws, "dup2", Some("CONCEPT"), None)
         .await
         .unwrap();
 
@@ -342,4 +363,312 @@ async fn replace_chunk_edges_is_idempotent_on_a_duplicate_edge() {
     graph::replace_chunk_edges(&pool, ws, &h, &model, &[(e1, e2, "rel".to_string(), 2.0)])
         .await
         .unwrap();
+}
+
+/// ENTITY-TYPE SEMANTICS (see `graph::resolve_entity`'s doc comment for the
+/// written decision this pins).
+///
+/// An EXPLICIT classification is last-write-wins: a later extraction pass that
+/// reclassifies "acme" from CONCEPT to ORG must stick, because the later pass
+/// is the better-informed one and the alternative is an entity permanently
+/// frozen at whatever the first, context-free mention guessed.
+///
+/// An ABSENT classification (`None`) must NOT overwrite. `None` is how
+/// `apply_extraction` resolves an entity that appeared only as an edge
+/// endpoint, with no `ExtractedEntity` describing it — it means "I know this
+/// node exists, I do not know what it is". Under naive last-write-wins that
+/// caller would silently DOWNGRADE a known PERSON/ORG back to the CONCEPT
+/// placeholder every time the entity was mentioned in passing.
+#[tokio::test]
+async fn resolve_entity_reclassifies_on_an_explicit_type_but_never_on_an_unknown_one() {
+    let (pool, ws, _page) = setup().await;
+    let name = format!("acme-{}", uuid::Uuid::new_v4());
+
+    let id = graph::resolve_entity(&pool, ws, &name, Some("CONCEPT"), None)
+        .await
+        .unwrap();
+
+    // A later pass reclassifies it explicitly.
+    let id2 = graph::resolve_entity(&pool, ws, &name, Some("ORG"), None)
+        .await
+        .unwrap();
+    assert_eq!(id, id2, "reclassification must not create a second entity");
+
+    let t: String = sqlx::query_scalar("SELECT entity_type FROM entities WHERE id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        t, "ORG",
+        "an explicit later classification must win; silently dropping it strands the entity \
+         at its first guess forever"
+    );
+
+    // A bare mention (edge endpoint, no type known) must leave ORG alone.
+    graph::resolve_entity(&pool, ws, &name, None, None)
+        .await
+        .unwrap();
+    let t2: String = sqlx::query_scalar("SELECT entity_type FROM entities WHERE id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        t2, "ORG",
+        "an unknown type must not downgrade a known one back to the CONCEPT placeholder"
+    );
+}
+
+/// A brand-new entity resolved with no known type still needs a NOT NULL
+/// `entity_type`; it defaults to the same CONCEPT placeholder a bare mention
+/// has always got.
+#[tokio::test]
+async fn resolve_entity_defaults_an_unknown_type_to_concept_on_insert() {
+    let (pool, ws, _page) = setup().await;
+    let name = format!("bare-{}", uuid::Uuid::new_v4());
+
+    let id = graph::resolve_entity(&pool, ws, &name, None, None)
+        .await
+        .unwrap();
+    let t: String = sqlx::query_scalar("SELECT entity_type FROM entities WHERE id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(t, "CONCEPT");
+}
+
+/// The description-widening path (`COALESCE`): the stub extractor never emits
+/// a description, so nothing else in the suite reaches this branch.
+#[tokio::test]
+async fn resolve_entity_widens_a_description_but_never_blanks_one() {
+    let (pool, ws, _page) = setup().await;
+    let name = format!("desc-{}", uuid::Uuid::new_v4());
+
+    graph::resolve_entity(&pool, ws, &name, Some("CONCEPT"), None)
+        .await
+        .unwrap();
+    let d: Option<String> = sqlx::query_scalar("SELECT description FROM entities WHERE name = $1")
+        .bind(&name)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(d, None, "sanity: no description was supplied yet");
+
+    // A later pass learns a description -> it lands.
+    graph::resolve_entity(&pool, ws, &name, Some("CONCEPT"), Some("a database"))
+        .await
+        .unwrap();
+    let d: Option<String> = sqlx::query_scalar("SELECT description FROM entities WHERE name = $1")
+        .bind(&name)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(d.as_deref(), Some("a database"));
+
+    // A later pass with NO description must not blank it out.
+    graph::resolve_entity(&pool, ws, &name, Some("CONCEPT"), None)
+        .await
+        .unwrap();
+    let d: Option<String> = sqlx::query_scalar("SELECT description FROM entities WHERE name = $1")
+        .bind(&name)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        d.as_deref(),
+        Some("a database"),
+        "a pass that knows no description must not destroy one an earlier pass wrote"
+    );
+}
+
+/// STUB-COVERAGE GAP (c): `replace_chunk_edges`'s
+/// `ON CONFLICT ... DO UPDATE SET weight` clause.
+///
+/// REACHABILITY, stated honestly, because the clause carries a long comment
+/// defending a branch that is much harder to reach than that comment implies:
+///
+///  - Duplicates WITHIN one call cannot reach it. The client-side dedupe by
+///    `(source, target, relation)` runs first, precisely because Postgres
+///    refuses to let one statement's ON CONFLICT affect a row twice.
+///  - A repeat call for the same `(workspace, chunk, model)` cannot reach it
+///    either: the DELETE at the top of the transaction has already removed
+///    every row the INSERT could collide with.
+///  - Two workspaces extracting the same shared chunk cannot reach it: the
+///    PK's `source_entity`/`target_entity` are per-workspace entity ids, so
+///    their PK tuples differ.
+///
+/// What CAN reach it is a row the workspace-scoped DELETE does not cover. The
+/// `edges` PK is `(source_entity, target_entity, relation, source_chunk_hash,
+/// model_id)` — it does NOT include `workspace_id`, while the DELETE does. So
+/// a row carrying the same PK tuple under a different `workspace_id` survives
+/// the DELETE and collides on INSERT. This test constructs exactly that,
+/// seeding the row directly, and proves the ON CONFLICT clause absorbs it
+/// instead of aborting the whole transaction with a PK violation.
+///
+/// This is defence-in-depth, not a path production reaches today: nothing in
+/// `apply_extraction` mixes one workspace's entity ids into another
+/// workspace's edge write. It is worth keeping and worth testing, because the
+/// PK not including `workspace_id` is exactly the sort of asymmetry that
+/// becomes reachable the moment someone adds a caller.
+#[tokio::test]
+async fn replace_chunk_edges_absorbs_a_conflicting_row_its_delete_did_not_cover() {
+    let (pool, ws, page) = setup().await;
+    let (_, other_ws, _) = setup().await;
+    let model = format!("model-{}", uuid::Uuid::new_v4());
+    let h = format!("hash-{}", uuid::Uuid::new_v4());
+    live_chunk(&pool, page, &h, "conflicting row text").await;
+
+    let e1 = graph::resolve_entity(&pool, ws, "c1", Some("CONCEPT"), None)
+        .await
+        .unwrap();
+    let e2 = graph::resolve_entity(&pool, ws, "c2", Some("CONCEPT"), None)
+        .await
+        .unwrap();
+
+    // A row with the SAME PK tuple but a different workspace_id: the
+    // workspace-scoped DELETE below will not remove it.
+    sqlx::query(
+        "INSERT INTO edges
+           (source_entity, target_entity, relation, weight, source_chunk_hash, model_id, workspace_id)
+         VALUES ($1, $2, 'rel', 0.1, $3, $4, $5)",
+    )
+    .bind(e1)
+    .bind(e2)
+    .bind(&h)
+    .bind(&model)
+    .bind(other_ws)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Without the ON CONFLICT clause this is a PK violation and the whole
+    // transaction — edges AND marker — rolls back.
+    graph::replace_chunk_edges(&pool, ws, &h, &model, &[(e1, e2, "rel".to_string(), 0.9)])
+        .await
+        .expect("a colliding row the DELETE could not cover must be absorbed, not abort the write");
+
+    let w: f32 = sqlx::query_scalar(
+        "SELECT weight FROM edges
+         WHERE source_entity = $1 AND target_entity = $2 AND relation = 'rel'
+           AND source_chunk_hash = $3 AND model_id = $4",
+    )
+    .bind(e1)
+    .bind(e2)
+    .bind(&h)
+    .bind(&model)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(w, 0.9, "the last write's weight must win");
+
+    // And the marker still committed, because the transaction did not abort.
+    let marked: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chunk_extractions
+         WHERE workspace_id = $1 AND content_hash = $2 AND model_id = $3",
+    )
+    .bind(ws)
+    .bind(&h)
+    .bind(&model)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(marked, 1);
+}
+
+/// ONE DEFINITION OF "LIVE" ACROSS BOTH QUEUES.
+///
+/// The design defines a live chunk as one referenced by a NON-ARCHIVED page.
+/// Neither `pending_extraction`, `extraction_progress`, nor `chunks::pending`
+/// filtered `pages.archived_at` — so archiving a page left its chunks in both
+/// the embedding and the extraction queue, and the graph/embeddings kept being
+/// built for content the user had deleted. Archiving is the product's delete;
+/// spending model calls on it (and surfacing its entities in a graph) is wrong
+/// on both cost and privacy grounds.
+///
+/// Notably NOTHING in the M1b suite broke when this filter was added, because
+/// nothing covered the semantics at all — the gap was in coverage, not in an
+/// M1b test encoding the opposite intent.
+#[tokio::test]
+async fn archiving_a_page_removes_its_chunks_from_both_queues() {
+    let (pool, ws, page) = setup().await;
+    let model = format!("model-{}", uuid::Uuid::new_v4());
+    let h = format!("hash-{}", uuid::Uuid::new_v4());
+    live_chunk(&pool, page, &h, "content that will be archived").await;
+
+    assert!(
+        graph::pending_extraction(&pool, &model, Some(ws), 1_000_000)
+            .await
+            .unwrap()
+            .iter()
+            .any(|(hash, _)| hash == &h),
+        "sanity: a live page's chunk must start out in the extraction queue"
+    );
+    assert!(
+        noted_db::chunks::pending(&pool, &model, Some(ws), 1_000_000)
+            .await
+            .unwrap()
+            .iter()
+            .any(|c| c.content_hash == h),
+        "sanity: it must start out in the embedding queue too"
+    );
+    assert_eq!(
+        graph::extraction_progress(&pool, &model, Some(ws))
+            .await
+            .unwrap(),
+        (0, 1),
+        "sanity: one live chunk, none extracted"
+    );
+
+    sqlx::query("UPDATE pages SET archived_at = now() WHERE id = $1")
+        .bind(page)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert!(
+        !graph::pending_extraction(&pool, &model, Some(ws), 1_000_000)
+            .await
+            .unwrap()
+            .iter()
+            .any(|(hash, _)| hash == &h),
+        "an archived page's chunk must leave the EXTRACTION queue"
+    );
+    assert!(
+        !noted_db::chunks::pending(&pool, &model, Some(ws), 1_000_000)
+            .await
+            .unwrap()
+            .iter()
+            .any(|c| c.content_hash == h),
+        "an archived page's chunk must leave the EMBEDDING queue — one definition of live, \
+         not two"
+    );
+    assert_eq!(
+        graph::extraction_progress(&pool, &model, Some(ws))
+            .await
+            .unwrap(),
+        (0, 0),
+        "an archived chunk must leave the progress denominator too; otherwise it sits there \
+         un-drainable, pinning progress below 100% forever"
+    );
+    assert_eq!(
+        noted_db::chunks::progress(&pool, &model, Some(ws))
+            .await
+            .unwrap(),
+        (0, 0),
+        "the embedding progress denominator must agree with the extraction one"
+    );
+
+    // And the extraction worker must not fan out into a workspace that only
+    // reaches the chunk through an archived page — if it did, the fan-out and
+    // the queue would disagree about what "live" means and a chunk could be
+    // polled forever without ever being markable.
+    assert!(
+        graph::workspaces_for_chunk(&pool, &h)
+            .await
+            .unwrap()
+            .is_empty(),
+        "workspaces_for_chunk must use the SAME definition of live as the queue"
+    );
 }

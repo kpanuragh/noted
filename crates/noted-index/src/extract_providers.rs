@@ -12,7 +12,9 @@
 //! this file, which are pure — no network, no Ollama. A real round trip
 //! (does Ollama actually honour `format` this way, does a real small model's
 //! output parse cleanly) is UNVERIFIED.
-use crate::extract::{ExtractError, ExtractedEdge, ExtractedEntity, Extraction, ExtractionProvider};
+use crate::extract::{
+    ExtractError, ExtractedEdge, ExtractedEntity, Extraction, ExtractionProvider,
+};
 use serde::{Deserialize, Serialize};
 
 /// Talks to Ollama's `/api/generate` endpoint (see
@@ -37,10 +39,49 @@ pub struct OllamaExtractor {
     client: reqwest::Client,
 }
 
+/// How long one `extract()` may take end-to-end before the request is torn
+/// down.
+///
+/// reqwest applies NO request timeout by default. Without this, a model that
+/// hangs (an Ollama process wedged loading weights, a GPU stuck, a server that
+/// accepted the connection and then went silent) blocks `extract().await`
+/// forever. `ExtractWorker::drain`'s `MAX_CONSECUTIVE_FAILURES` cap cannot
+/// save it: that counts batches that RETURNED making no progress, and a batch
+/// that never returns is never counted. The drain simply stops, with no error
+/// and no log line.
+///
+/// 300s is chosen to be generous rather than tight. Extraction is a
+/// constrained-decoding generation over a chunk of up to ~512 tokens on
+/// whatever hardware the operator has; on a CPU-only box (which is what this
+/// project has) a small local model can legitimately take minutes for a single
+/// chunk, and a timeout that fires on healthy-but-slow inference would turn
+/// every chunk into a poison chunk and stall the whole backfill — strictly
+/// worse than the hang. The number only has to be shorter than "forever" to do
+/// its job.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Establishing a TCP connection to a local (or LAN) Ollama is fast or not
+/// happening at all — there is no slow-but-healthy case to protect, unlike
+/// inference above. A short timeout means "Ollama isn't running" surfaces as a
+/// clear error in seconds instead of waiting out `REQUEST_TIMEOUT`.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl OllamaExtractor {
     /// `base_url` example: `http://localhost:11434` (no trailing slash).
     /// `model` is an Ollama model tag, e.g. `qwen2.5:3b-instruct`.
     pub fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
+        Self::with_timeouts(base_url, model, REQUEST_TIMEOUT, CONNECT_TIMEOUT)
+    }
+
+    /// `new` with the timeouts spelled out. Exists so the hang behaviour is
+    /// testable in bounded time — a test cannot wait out the 300s production
+    /// `REQUEST_TIMEOUT` to prove the request is bounded at all.
+    pub fn with_timeouts(
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        request_timeout: std::time::Duration,
+        connect_timeout: std::time::Duration,
+    ) -> Self {
         let model = model.into();
         // Namespaced so this provider's extractions never collide with
         // `StubExtractor`'s (`stub-extractor-v1`) or another provider's
@@ -51,7 +92,18 @@ impl OllamaExtractor {
             base_url: base_url.into(),
             model,
             model_id,
-            client: reqwest::Client::new(),
+            // `build()` only fails on a TLS backend that cannot initialise;
+            // there is no configuration here that can be invalid, and a
+            // provider constructor returning Result for that would push an
+            // impossible error onto every caller. Fall back to the
+            // default-configured client rather than panicking — a client with
+            // no timeout is still better than no client, and the failure it
+            // would represent (broken TLS) has nothing to do with timeouts.
+            client: reqwest::Client::builder()
+                .timeout(request_timeout)
+                .connect_timeout(connect_timeout)
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 }
@@ -282,6 +334,44 @@ mod tests {
     fn parse_and_validate_rejects_malformed_json() {
         let err = parse_and_validate("not json").unwrap_err();
         assert!(matches!(err, ExtractError::Invalid(_)));
+    }
+
+    /// A model that accepts the connection and then goes silent must make
+    /// `extract()` RETURN (as an error the worker can treat as a poison
+    /// chunk), not hang. reqwest has no default request timeout, so without an
+    /// explicit one this test never finishes — `drain()` would stall forever
+    /// and `MAX_CONSECUTIVE_FAILURES` would never trip, because a batch that
+    /// never returns is never counted as a failed batch.
+    #[tokio::test]
+    async fn a_hung_server_times_out_instead_of_blocking_forever() {
+        // Accepts connections and then never writes a response.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream); // hold it open, answer nothing
+            }
+        });
+
+        let provider = OllamaExtractor::with_timeouts(
+            format!("http://{addr}"),
+            "hung-model",
+            std::time::Duration::from_millis(300),
+            std::time::Duration::from_secs(5),
+        );
+
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            provider.extract("Alice met Bob."),
+        )
+        .await
+        .expect("extract() must return within the outer bound, not hang")
+        .expect_err("a server that never responds must surface as an error");
+        assert!(
+            matches!(err, ExtractError::Model(_)),
+            "a transport timeout is a model/transport failure, got: {err}"
+        );
     }
 
     #[test]
