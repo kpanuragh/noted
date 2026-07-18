@@ -17,9 +17,11 @@
 -- has been written for this chunk under this model", which is the thing the
 -- queue actually needs to know.
 --
--- Rebuild rather than ALTER: the primary key gains a leading column AND
--- existing rows must FAN OUT (one global row -> one row per referencing
--- workspace), which an in-place ALTER cannot express.
+-- Rebuild rather than ALTER: the primary key gains a leading column AND one
+-- global row must be able to become N rows (it is re-attributed to each
+-- workspace the evidence supports — see the backfill below for the attribution
+-- rule, which is deliberately NOT a blind fan-out over every referencing
+-- workspace). An in-place ALTER cannot express either change.
 CREATE TABLE chunk_extractions_new (
     workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     content_hash text NOT NULL REFERENCES chunks(content_hash) ON DELETE CASCADE,

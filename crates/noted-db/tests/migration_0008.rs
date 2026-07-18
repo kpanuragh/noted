@@ -10,19 +10,19 @@
 //!
 //! These tests therefore run the migration's REAL SQL text (`include_str!`, so
 //! editing the migration edits the test's subject) against a hand-built
-//! 0005-era table layout, inside a throwaway schema in a transaction that is
+//! pre-0008 table layout, inside a throwaway schema in a transaction that is
 //! always rolled back. Nothing is left behind and the shared dev database is
 //! untouched.
 use sqlx::Connection;
 
 const MIGRATION_0008: &str = include_str!("../migrations/0008_chunk_extractions_workspace.sql");
 
-/// The 0005-era world 0008 has to upgrade: a GLOBAL `chunk_extractions` keyed
+/// The pre-0008 world 0008 has to upgrade: a GLOBAL `chunk_extractions` keyed
 /// `(content_hash, model_id)`, plus just enough of `workspaces`/`pages`/
 /// `chunks`/`page_chunks`/`entities`/`edges` for 0008's FKs and backfill query
 /// to resolve. Deliberately minimal — this is the shape 0008 reads, not a copy
 /// of the whole schema.
-const ERA_0005: &str = r#"
+const ERA_PRE_0008: &str = r#"
 CREATE TABLE workspaces (
     id   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name text NOT NULL
@@ -71,7 +71,7 @@ async fn conn() -> sqlx::PgConnection {
     sqlx::PgConnection::connect(&url).await.unwrap()
 }
 
-/// Build a throwaway schema holding the 0005-era layout and point the
+/// Build a throwaway schema holding the pre-0008 layout and point the
 /// transaction's `search_path` at it, so the migration's unqualified table
 /// names (and its FK targets) resolve there and nothing touches the real
 /// schema. The caller always rolls back, so even the schema itself never
@@ -89,7 +89,7 @@ async fn era_0005(tx: &mut sqlx::PgTransaction<'_>) {
     .execute(&mut **tx)
     .await
     .unwrap();
-    sqlx::raw_sql(ERA_0005).execute(&mut **tx).await.unwrap();
+    sqlx::raw_sql(ERA_PRE_0008).execute(&mut **tx).await.unwrap();
 }
 
 /// THE BUG THIS TEST EXISTS FOR.
