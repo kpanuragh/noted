@@ -147,6 +147,16 @@ async fn rechunk_writes_page_chunk_links() {
     );
 }
 
+/// ISOLATION: the queue is scoped to THIS test's workspace.
+///
+/// It used to pass `None`, which drains the whole instance — and `pending` takes
+/// a `LIMIT`, so on a shared dev database the assertion silently became "is this
+/// chunk among the 100 oldest unembedded chunks in the entire instance". That is
+/// a bound every new database test erodes; it went red the first time a fixture
+/// pushed the global backlog past 100, in a test file that has nothing to do
+/// with chunking. The subject here is `rechunk_page`, not the global backlog, so
+/// the queue is scoped — the same "isolate your own DATA SPACE, not just your
+/// files" rule the M2a run recorded.
 #[tokio::test]
 async fn rechunked_chunks_appear_in_the_work_queue() {
     let (pool, page) = setup().await;
@@ -154,7 +164,12 @@ async fn rechunked_chunks_appear_in_the_work_queue() {
 
     rechunk_page(&pool, page).await.unwrap();
 
-    let pending = noted_db::chunks::pending(&pool, "test-model", None, 100)
+    let ws: uuid::Uuid = sqlx::query_scalar("SELECT workspace_id FROM pages WHERE id = $1")
+        .bind(page)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let pending = noted_db::chunks::pending(&pool, "test-model", Some(ws), 100)
         .await
         .unwrap();
     assert!(

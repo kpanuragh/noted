@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use noted_crdt::NotedDoc;
 use noted_db::PgPool;
+use noted_index::answer::{AnswerProvider, StubAnswerer};
+use noted_index::summary::{StubSummariser, SummaryProvider};
 use noted_index::provider::{EMBEDDING_DIMS, EmbedError, EmbeddingProvider};
 use tokio::sync::{Mutex, broadcast};
 use uuid::Uuid;
@@ -75,6 +77,18 @@ pub struct AppState {
     /// every time. `dyn` (not a concrete `FastEmbed`) so tests can inject a
     /// cheap stub instead of downloading the real model.
     pub embedder: Arc<dyn EmbeddingProvider>,
+    /// Synthesises an answer from retrieved context — the ONLY component in the
+    /// product that needs a language model.
+    ///
+    /// A STUB by default, and that is the honest default rather than a
+    /// placeholder: there is no LLM in this environment, so `main` wires
+    /// `StubAnswerer` and the Ask surface returns deterministic prose over real
+    /// retrieval. Swapping in a real answerer is an operator step, and the
+    /// retrieval underneath it is unchanged either way.
+    pub answerer: Arc<dyn AnswerProvider>,
+    /// Names the summariser whose community summaries global search may read,
+    /// and regenerates the stale ones it encounters. Same stub posture.
+    pub summariser: Arc<dyn SummaryProvider>,
 }
 
 impl AppState {
@@ -83,6 +97,8 @@ impl AppState {
             pool,
             hubs: Arc::new(Mutex::new(HashMap::new())),
             embedder,
+            answerer: Arc::new(StubAnswerer::new()),
+            summariser: Arc::new(StubSummariser::new()),
         }
     }
 

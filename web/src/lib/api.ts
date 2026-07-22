@@ -41,6 +41,43 @@ export type RelatedHit = {
   distance: number;
 };
 
+
+/** Why a chunk is in a local answer's evidence — the "show your work" surface. */
+export type Inclusion =
+  | { kind: "seed" }
+  | { kind: "graph"; hops: number };
+
+export type Citation = {
+  page_id: string;
+  title: string;
+  content_hash: string;
+  snippet: string;
+  why: Inclusion;
+};
+
+export type SeedEntity = { id: string; name: string };
+
+export type LocalAnswer = {
+  answer: string;
+  citations: Citation[];
+  seed_entities: SeedEntity[];
+};
+
+export type PartialAnswer = {
+  community_id: string;
+  member_count: number;
+  was_stale: boolean;
+  text: string;
+  relevance: number;
+};
+
+export type GlobalAnswer = {
+  answer: string;
+  partials: PartialAnswer[];
+  /** Themes with no usable summary, so NOT consulted. Shown, never hidden. */
+  skipped_unsummarised: number;
+};
+
 /**
  * Raised when a 200 carries a body that is not the shape this client documents.
  *
@@ -151,6 +188,67 @@ async function json<T>(
 }
 
 /** Lifts an element guard to a list guard, so a bad element fails the request. */
+
+/**
+ * Validate serde's INTERNALLY-tagged enum: `#[serde(tag = "kind", rename_all =
+ * "snake_case")]` puts the variant in a `kind` field, so the wire shape is
+ * `{kind:"seed"}` / `{kind:"graph",hops:n}` — identical to the `Inclusion` type
+ * above, which is why nothing needs remapping.
+ *
+ * Worth stating because the first version of this guard was written for serde's
+ * EXTERNALLY-tagged default (`"Seed"` / `{Graph:{hops}}`) and would therefore
+ * have rejected every genuine response as a shape error — the Ask page would
+ * have failed 100% of the time, and `tsc` cannot see the difference because
+ * both are `unknown` at the boundary. Verified against the running server, not
+ * against the type.
+ */
+function parseInclusion(v: unknown): Inclusion | null {
+  if (typeof v !== "object" || v === null) return null;
+  const o = v as Record<string, unknown>;
+  if (o.kind === "seed") return { kind: "seed" };
+  if (o.kind === "graph" && typeof o.hops === "number") {
+    return { kind: "graph", hops: o.hops };
+  }
+  return null;
+}
+
+function isLocalAnswer(v: unknown): v is LocalAnswer {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  if (typeof o.answer !== "string") return false;
+  if (!Array.isArray(o.citations) || !Array.isArray(o.seed_entities)) return false;
+  return o.citations.every((c) => {
+    if (typeof c !== "object" || c === null) return false;
+    const r = c as Record<string, unknown>;
+    return (
+      typeof r.page_id === "string" &&
+      typeof r.title === "string" &&
+      typeof r.snippet === "string" &&
+      parseInclusion(r.why) !== null
+    );
+  });
+}
+
+function isGlobalAnswer(v: unknown): v is GlobalAnswer {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.answer === "string" &&
+    Array.isArray(o.partials) &&
+    typeof o.skipped_unsummarised === "number" &&
+    o.partials.every((p) => {
+      if (typeof p !== "object" || p === null) return false;
+      const r = p as Record<string, unknown>;
+      return (
+        typeof r.community_id === "string" &&
+        typeof r.text === "string" &&
+        typeof r.relevance === "number" &&
+        typeof r.member_count === "number"
+      );
+    })
+  );
+}
+
 function arrayOf<T>(guard: (v: unknown) => v is T) {
   return (v: unknown): v is T[] => Array.isArray(v) && v.every(guard);
 }
@@ -223,5 +321,19 @@ export const api = {
       API_BASE,
     );
     return json(await fetch(url.toString()), "/api/pages/:id/related", arrayOf(isRelatedHit));
+  },
+
+  async askLocal(workspaceId: string, q: string): Promise<LocalAnswer> {
+    const url = new URL("/api/ask/local", API_BASE);
+    url.searchParams.set("workspace_id", workspaceId);
+    url.searchParams.set("q", q);
+    return json<LocalAnswer>(await fetch(url.toString()), "ask/local", isLocalAnswer);
+  },
+
+  async askGlobal(workspaceId: string, q: string): Promise<GlobalAnswer> {
+    const url = new URL("/api/ask/global", API_BASE);
+    url.searchParams.set("workspace_id", workspaceId);
+    url.searchParams.set("q", q);
+    return json<GlobalAnswer>(await fetch(url.toString()), "ask/global", isGlobalAnswer);
   },
 };

@@ -23,6 +23,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::extract::{Extraction, ExtractionProvider};
+use crate::community_worker::CommunityWorker;
 use crate::graph_write::apply_extraction;
 
 /// How many pending chunks to poll per round trip. Extraction is one
@@ -43,6 +44,17 @@ pub const MAX_CONSECUTIVE_FAILURES: usize = 3;
 pub enum ExtractWorkerError {
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
+    /// A community-maintenance failure after the edges were already committed.
+    ///
+    /// PROPAGATED, not swallowed, for the same reason a `sqlx::Error` in step
+    /// 2-3 is: `CommunityError` is a database failure in all its variants, and
+    /// grinding on past a dead database silently loses work rather than
+    /// isolating a bad chunk. The extraction itself is NOT lost — its edges and
+    /// its `chunk_extractions` marker committed in their own transaction before
+    /// this ran — so the cost of the failure is bounded to stale communities
+    /// for that workspace, which the next cold run corrects.
+    #[error("community maintenance failed after edges were written: {0}")]
+    Community(#[from] crate::community_worker::CommunityError),
     #[error(
         "extraction stalled: {batches} consecutive batch(es) made no progress (the last had \
          {chunks} chunk(s) pending); {extracted} chunk(s) were extracted before giving up. \
@@ -183,7 +195,7 @@ impl ExtractWorker {
             }
 
             for workspace_id in &workspaces {
-                apply_extraction(
+                let applied = apply_extraction(
                     &self.pool,
                     *workspace_id,
                     content_hash,
@@ -191,6 +203,37 @@ impl ExtractWorker {
                     &extraction,
                 )
                 .await?;
+
+                // THE WIRING. Until this call existed, `CommunityWorker` had no
+                // production caller at all: it was fully built, fully tested,
+                // and reachable only from a test. Writing a page updated the
+                // graph's edges and left its communities frozen forever.
+                //
+                // HERE, per workspace, inside the fan-out loop — not after the
+                // batch and not after the drain — for three reasons:
+                //   * Communities are per-workspace, and so is churn and the
+                //     cold-run threshold. A batch-level call would have to
+                //     re-derive which workspaces changed and by how much, which
+                //     is precisely what this loop already knows.
+                //   * `apply_extraction` has just told us the exact entity set
+                //     this chunk touched. `hot_reassign` cascades transitively,
+                //     so a broader set — anything reconstructed later — would
+                //     merge communities that should stay distinct.
+                //   * A shared chunk fans out to N workspaces with N different
+                //     graphs; each needs its own decision about whether the cold
+                //     path is due.
+                //
+                // Deliberately NOT inside `replace_chunk_edges`' transaction:
+                // clustering is derived state, and a Louvain run that failed
+                // would otherwise roll back an extraction that succeeded. The
+                // error DOES propagate (see `ExtractWorkerError::Community`) —
+                // but the edges and the extracted-marker have already committed,
+                // so what is lost is a churn bump, not work.
+                if !applied.entities.is_empty() {
+                    CommunityWorker::new(self.pool.clone(), *workspace_id)
+                        .on_edges_changed(&applied.entities, applied.edges)
+                        .await?;
+                }
             }
 
             succeeded += 1;

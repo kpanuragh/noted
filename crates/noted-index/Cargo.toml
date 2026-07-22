@@ -15,7 +15,7 @@ embed = ["dep:fastembed"]
 # Default-off for the same reason `embed` is: not every consumer wants the
 # dependency, and there is no Ollama server in every environment (there is
 # none in CI/dev here) to talk to.
-extract-ollama = ["dep:reqwest", "dep:serde", "dep:serde_json"]
+extract-ollama = ["dep:reqwest", "dep:serde_json"]
 
 [dependencies]
 sha2 = "0.10"
@@ -29,7 +29,12 @@ anyhow.workspace = true
 tracing-subscriber = "0.3"
 fastembed = { version = "5.17", optional = true }
 reqwest = { version = "0.12", features = ["json"], optional = true }
-serde = { workspace = true, optional = true }
+# UNCONDITIONAL, not gated behind `extract-ollama` as it once was: M2c's
+# `graph_search::{LocalAnswer, Citation, Inclusion}` are response types that
+# cross to HTTP and so must derive `Serialize` in every build, exactly as
+# `noted_db::graph_search::GraphHit` already does. No new dependency — serde is
+# already non-optional in `noted-db`, which this crate depends on unconditionally.
+serde = { workspace = true }
 serde_json = { workspace = true, optional = true }
 # Unconditional (not gated behind `embed`): `extract.rs`'s `ExtractionProvider`
 # trait is pure logic with no db/network dependency, so it — and this macro —

@@ -34,13 +34,39 @@ use uuid::Uuid;
 /// existing node's type alone. Dropping the edge instead would silently lose
 /// provenance the extractor clearly intended to record; resolving is the more
 /// conservative choice.
+/// What one `apply_extraction` call actually changed.
+///
+/// Returned rather than discarded because the community layer needs BOTH halves
+/// and can derive neither: `edges` is the churn to report, and `entities` is the
+/// set to hand `hot_reassign`.
+///
+/// **`entities` is the edge ENDPOINTS, not every entity resolved.** An entity
+/// that this extraction named but connected to nothing has no neighbour to join,
+/// so reassigning it is a no-op. And passing more than an edit actually touched
+/// is actively harmful: `hot_reassign` cascades transitively, so handing it a
+/// broad set merges communities that should have stayed distinct.
+///
+/// KNOWN GAP, deliberate: an entity that this chunk PREVIOUSLY connected and no
+/// longer does is not in this set — `replace_chunk_edges` deletes the old edges
+/// inside its own transaction and does not report what it removed. Such an
+/// entity keeps its old community until the next cold run corrects it, which is
+/// exactly the bounded, self-correcting approximation the hot/cold design is
+/// built on (M2b design §2.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtractionApplied {
+    /// Deduped edge endpoints, first-seen order.
+    pub entities: Vec<Uuid>,
+    /// How many edges were written — the churn to report.
+    pub edges: i64,
+}
+
 pub async fn apply_extraction(
     pool: &sqlx::PgPool,
     workspace_id: Uuid,
     chunk_hash: &str,
     model_id: &str,
     ex: &Extraction,
-) -> Result<(), sqlx::Error> {
+) -> Result<ExtractionApplied, sqlx::Error> {
     let mut ids: HashMap<String, Uuid> = HashMap::with_capacity(ex.entities.len());
 
     for entity in &ex.entities {
@@ -83,5 +109,23 @@ pub async fn apply_extraction(
         tuples.push((source_id, target_id, edge.relation.clone(), edge.weight));
     }
 
-    graph::replace_chunk_edges(pool, workspace_id, chunk_hash, model_id, &tuples).await
+    graph::replace_chunk_edges(pool, workspace_id, chunk_hash, model_id, &tuples).await?;
+
+    // Deduped endpoints, in first-seen order so the result is deterministic for
+    // a deterministic extractor — `hot_reassign` applies moves IN SEQUENCE, each
+    // reading the last one's state, so the order is part of the outcome.
+    let mut affected: Vec<Uuid> = Vec::with_capacity(tuples.len() * 2);
+    for (source, target, _, _) in &tuples {
+        if !affected.contains(source) {
+            affected.push(*source);
+        }
+        if !affected.contains(target) {
+            affected.push(*target);
+        }
+    }
+
+    Ok(ExtractionApplied {
+        edges: tuples.len() as i64,
+        entities: affected,
+    })
 }

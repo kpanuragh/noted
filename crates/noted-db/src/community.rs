@@ -304,6 +304,20 @@ pub async fn bump_churn(
 /// `$1` is the workspace id, in every query that splices this. Callers must
 /// bind it first and must not renumber it.
 ///
+/// # Columns
+///
+/// `source_entity`, `target_entity`, `weight`, `source_chunk_hash`. The last was
+/// added for M2c's local search, whose FIRST step is "which entities does a seed
+/// CHUNK anchor" — a question that needs the provenance hash and cannot be
+/// answered from the endpoint pair alone. The alternative considered and
+/// rejected was to join `edges` directly for that one step and test the pair
+/// against `clusterable_edges` with an `EXISTS`: that would have let an ARCHIVED
+/// page's chunk seed the traversal whenever some *other*, live chunk happened to
+/// connect the same two entities — a second, weaker definition of live, which is
+/// the exact bug class this macro exists to prevent. Adding a column is safe
+/// because every consumer selects named columns (no `SELECT *`, no `UNION` over
+/// the CTE), so the extra column is invisible to the five existing ones.
+///
 /// Note it does NOT filter on `model_id`: a workspace's graph is the UNION of
 /// what every extraction model contributed, because `entities` carries no
 /// model and the two models' edges genuinely describe the same nodes. Running
@@ -323,7 +337,7 @@ macro_rules! clusterable_edges_cte {
     () => {
         "
     clusterable_edges AS (
-        SELECT e.source_entity, e.target_entity, e.weight
+        SELECT e.source_entity, e.target_entity, e.weight, e.source_chunk_hash
         FROM edges e
         WHERE e.workspace_id = $1
           AND EXISTS (
@@ -668,4 +682,105 @@ pub async fn churn(
     .fetch_optional(pool)
     .await?;
     Ok(row.unwrap_or((0, None)))
+}
+
+/// One community's summary, as global search consumes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SummaryCandidate {
+    pub community_id: Uuid,
+    pub summary: String,
+    /// `'valid'` or `'stale_usable'` (M2b §2.2). Carried rather than filtered on
+    /// because global search USES a stale summary and separately asks for its
+    /// regeneration — dropping it here would make that impossible.
+    pub state: String,
+    pub member_count: i64,
+}
+
+/// What `summaries_for_search` found, and what it had to leave out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SummarySelection {
+    pub candidates: Vec<SummaryCandidate>,
+    /// Communities in this workspace with NO usable summary under `model_id`.
+    ///
+    /// RETURNED, NOT DISCARDED. A global answer computed over 3 of 40
+    /// communities is not wrong, but presenting it as though it covered the
+    /// workspace would be — and the caller cannot recover this number later.
+    pub skipped_unsummarised: i64,
+}
+
+/// Select the communities a global search should map over.
+///
+/// # Selection is by SIZE, and that is the milestone's weakest point
+///
+/// The principled selection is semantic: embed the question, embed each summary,
+/// rank by similarity. That needs a THIRD embedding space (chunks have one,
+/// entities deliberately do not — see the M2c design §2.1) plus its own backfill
+/// queue and index. Until that exists this ranks by member count, i.e. "biggest
+/// themes first", which is a proxy for importance and NOT for relevance to the
+/// question. Recorded plainly here and in the design's risk table rather than
+/// dressed up: a question about a niche topic will map over the workspace's
+/// largest communities, which may not include it.
+///
+/// # `model_id` filters, and mismatches count as skipped
+///
+/// A summary written by a different summariser is prose about the right
+/// community from the wrong model. M2b already treats a model change as a full
+/// regeneration (`summary_worker::classify`), so including such rows here would
+/// contradict that. They are excluded and counted in `skipped_unsummarised`,
+/// which is exactly what they are from this search's point of view.
+pub async fn summaries_for_search(
+    pool: &sqlx::PgPool,
+    workspace_id: Uuid,
+    model_id: &str,
+    limit: i64,
+) -> Result<SummarySelection, sqlx::Error> {
+    let limit = limit.clamp(1, 50);
+
+    let candidates: Vec<SummaryCandidate> = sqlx::query_as::<_, (Uuid, String, String, i64)>(
+        "SELECT c.id,
+                s.summary,
+                s.state,
+                count(cm.entity_id) AS member_count
+         FROM communities c
+         JOIN community_summaries s ON s.community_id = c.id AND s.model_id = $2
+         LEFT JOIN community_members cm ON cm.community_id = c.id
+         WHERE c.workspace_id = $1
+         GROUP BY c.id, s.summary, s.state, s.created_at
+         ORDER BY member_count DESC, s.created_at DESC, c.id
+         LIMIT $3",
+    )
+    .bind(workspace_id)
+    .bind(model_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(
+        |(community_id, summary, state, member_count)| SummaryCandidate {
+            community_id,
+            summary,
+            state,
+            member_count,
+        },
+    )
+    .collect();
+
+    let skipped_unsummarised: i64 = sqlx::query_scalar(
+        "SELECT count(*)
+         FROM communities c
+         WHERE c.workspace_id = $1
+           AND NOT EXISTS (
+               SELECT 1 FROM community_summaries s
+               WHERE s.community_id = c.id AND s.model_id = $2
+           )",
+    )
+    .bind(workspace_id)
+    .bind(model_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(SummarySelection {
+        candidates,
+        skipped_unsummarised,
+    })
 }
