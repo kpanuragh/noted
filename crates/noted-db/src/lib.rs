@@ -44,4 +44,7 @@ pub mod views;
 
 // Relations between database rows, and rollups computed over them (M3).
 pub mod relations;
+
+// Projecting typed property values into the knowledge graph (M3-5).
+pub mod property_graph;
 pub mod stats;

@@ -427,3 +427,44 @@ pub async fn reap_graph(
     let entities = reap_orphan_entities(pool, workspace_id).await?;
     Ok(Reaped { edges, entities })
 }
+
+/// `resolve_entity`, inside a caller's transaction.
+///
+/// Property projection deletes a page's old edges and writes the new ones in
+/// ONE transaction, so the entity resolution in the middle has to join it —
+/// otherwise a crash could commit entities for edges that were rolled back.
+pub async fn resolve_entity_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: Uuid,
+    name: &str,
+    entity_type: Option<&str>,
+    description: Option<&str>,
+) -> Result<Uuid, sqlx::Error> {
+    sqlx::query_scalar(
+        "INSERT INTO entities (workspace_id, name, entity_type, description)
+         VALUES ($1, $2, COALESCE($3, 'CONCEPT'), $4)
+         ON CONFLICT (workspace_id, name) DO UPDATE
+           SET entity_type = COALESCE($3, entities.entity_type),
+               description = COALESCE(EXCLUDED.description, entities.description)
+         RETURNING id",
+    )
+    .bind(workspace_id)
+    .bind(name)
+    .bind(entity_type)
+    .bind(description)
+    .fetch_one(&mut **tx)
+    .await
+}
+
+/// The same normalisation the extractor applies, so a property value and a
+/// mention in prose resolve to the SAME entity.
+///
+/// Without this, "Helios" typed into a select and "helios" read out of a
+/// sentence would be two nodes, and the graph would show two unrelated things
+/// where the user sees one.
+pub fn normalise_for_graph(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
