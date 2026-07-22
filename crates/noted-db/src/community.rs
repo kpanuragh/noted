@@ -334,9 +334,34 @@ pub async fn bump_churn(
 /// query below is still a `'static` literal that no runtime value can reach,
 /// and the shared definition costs nothing at run time.
 macro_rules! clusterable_edges_cte {
-    () => {
-        "
-    clusterable_edges AS (
+    // ALWAYS takes a materialisation hint, so every call site states which kind
+    // of consumer it is rather than inheriting a default nobody thought about.
+    //
+    // `""` — let Postgres decide. What every consumer that SCANS the whole set
+    // wants: the clusterer, the churn count, the stats. The set is computed
+    // once and read once, and materialising it is right.
+    //
+    // `"NOT MATERIALIZED"` for consumers that JOIN AGAINST the set instead of
+    // scanning it.
+    //
+    // The recursive traversal in `graph_search` references this CTE three
+    // times, which makes Postgres materialise it — and a materialised CTE
+    // cannot be indexed. Measured at 4k edges: 69,300 rows discarded by the
+    // join filter per query, because each frontier row rescans the whole
+    // materialised set. Cost is O(frontier x live edges), and the depth cap
+    // does NOT bound it, because the cost is in the rescan rather than the
+    // depth.
+    //
+    // Inlining lets the planner push `ce.source_entity = w.entity_id` down into
+    // `edges` and use `edges_source_entity_idx`.
+    //
+    // This is a HINT PARAMETER rather than a second copy of the CTE on purpose:
+    // four data-loss bugs in this codebase came from two queries disagreeing
+    // about what "live" meant, so the definition stays in one place and only
+    // the materialisation strategy varies.
+    ($hint:literal) => {
+        concat!("
+    clusterable_edges AS ", $hint, " (
         SELECT e.source_entity, e.target_entity, e.weight, e.source_chunk_hash
         FROM edges e
         WHERE e.workspace_id = $1
@@ -348,7 +373,7 @@ macro_rules! clusterable_edges_cte {
                 AND p.workspace_id = e.workspace_id
                 AND p.archived_at IS NULL
           )
-    )"
+    )")
     };
 }
 
@@ -402,7 +427,7 @@ pub async fn clusterable_graph(
 ) -> Result<(Vec<(Uuid, String)>, Vec<(Uuid, Uuid, f64)>), sqlx::Error> {
     let nodes: Vec<(Uuid, String)> = sqlx::query_as(concat!(
         "WITH ",
-        clusterable_edges_cte!(),
+        clusterable_edges_cte!(""),
         " SELECT en.id, en.name
           FROM entities en
           WHERE en.workspace_id = $1
@@ -418,7 +443,7 @@ pub async fn clusterable_graph(
 
     let edges: Vec<(Uuid, Uuid, f64)> = sqlx::query_as(concat!(
         "WITH ",
-        clusterable_edges_cte!(),
+        clusterable_edges_cte!(""),
         " SELECT LEAST(ce.source_entity, ce.target_entity)    AS a,
                  GREATEST(ce.source_entity, ce.target_entity) AS b,
                  SUM(ce.weight)::double precision             AS w
@@ -446,7 +471,7 @@ pub async fn clusterable_edge_count(
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(concat!(
         "WITH ",
-        clusterable_edges_cte!(),
+        clusterable_edges_cte!(""),
         " SELECT count(*) FROM (
              SELECT DISTINCT LEAST(ce.source_entity, ce.target_entity),
                              GREATEST(ce.source_entity, ce.target_entity)
@@ -487,7 +512,7 @@ pub async fn strongest_clustered_neighbour(
 ) -> Result<Option<Uuid>, sqlx::Error> {
     sqlx::query_scalar(concat!(
         "WITH ",
-        clusterable_edges_cte!(),
+        clusterable_edges_cte!(""),
         ", neighbours AS (
              SELECT CASE WHEN ce.source_entity = $2 THEN ce.target_entity
                          ELSE ce.source_entity END       AS neighbour,

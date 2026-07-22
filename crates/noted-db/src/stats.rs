@@ -82,7 +82,7 @@ pub async fn workspace_stats(
     // struct field.
     let (pages, entities, edges): (i64, i64, i64) = sqlx::query_as(concat!(
         "WITH ",
-        crate::community::clusterable_edges_cte!(),
+        crate::community::clusterable_edges_cte!(""),
         " SELECT
            (SELECT count(*) FROM pages
              WHERE workspace_id = $1 AND archived_at IS NULL),
