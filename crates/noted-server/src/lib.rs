@@ -57,7 +57,10 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(routes::health::health))
         .route("/api/auth/signup", post(routes::auth::sign_up))
         .route("/api/auth/signin", post(routes::auth::sign_in))
-        .route("/api/auth/signout", post(routes::auth::sign_out));
+        .route("/api/auth/signout", post(routes::auth::sign_out))
+        // PUBLIC by design: the recipient of a share link has no account. It
+        // serves exactly the page the token names — see `routes::shares::read`.
+        .route("/api/shared/{token}", get(routes::shares::read));
 
     let protected = Router::new()
         .route("/api/me", get(routes::auth::me))
@@ -78,6 +81,8 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/api/pages/{id}/reproject", post(routes::pages::reproject))
         .route("/api/pages/{id}/related", get(routes::search::related))
+        .route("/api/pages/{id}/share", post(routes::shares::create))
+        .route("/api/shares/{token}", axum::routing::delete(routes::shares::revoke))
         .route("/api/quickfind", get(routes::search::quick_find))
         .route("/api/search", get(routes::search::search))
         .route("/api/ask/local", get(routes::ask::local))

@@ -31,9 +31,10 @@ Working and tested. **Not production-ready** — read the caveats.
 | Per-page permissions, enforced on every retrieval surface | ✅ |
 | Background indexing + graph reaper | ✅ |
 | Databases / table / board / calendar views | ❌ not started |
-| **Share links, comments, public API, plugins** | ❌ not started |
+| Share links (public, tokenised, revocable) | ✅ |
+| **Comments, public API, templates, plugins** | ❌ not started |
 
-**301 Rust tests, 31 web unit tests, 13 end-to-end tests.**
+**309 Rust tests, 31 web unit tests, 13 end-to-end tests.**
 
 ### Caveats worth reading before you deploy this
 
@@ -157,6 +158,9 @@ GET  /api/search?workspace_id=&q=
 GET  /api/ask/local?workspace_id=&q=
 GET  /api/ask/global?workspace_id=&q=
 GET  /api/workspaces/{workspace_id}/stats
+GET  /api/workspaces/{workspace_id}/indexing
+POST /api/pages/{id}/share                    DELETE /api/shares/{token}
+GET  /api/shared/{token}                      (public — no session)
 WS   /sync/{page_id}
 ```
 
