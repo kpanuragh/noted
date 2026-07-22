@@ -351,3 +351,164 @@ pub async fn run(
     }
     Ok(rows)
 }
+
+/// Rows grouped for a board view.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Group {
+    /// The group's value, or `None` for the "No value" column.
+    pub value: Option<String>,
+    pub rows: Vec<Row>,
+}
+
+/// Run a board view: the same rows a table would return, grouped by a select
+/// property.
+///
+/// # "No value" is a COLUMN, not a hidden bucket
+///
+/// A row whose group property is unset must appear somewhere a user can see and
+/// drag it out of. Dropping it — the obvious implementation, where you group by
+/// a value and skip the ones that have none — makes rows silently vanish from
+/// the board while still existing in the table, which reads as data loss.
+///
+/// The empty group is emitted even when it has no rows, so the column is a
+/// visible drop target rather than something that appears only once something
+/// is already in it.
+pub async fn run_board(
+    pool: &sqlx::PgPool,
+    view: &View,
+    workspace_id: Uuid,
+    user_id: Uuid,
+    limit: i64,
+) -> Result<Vec<Group>, ViewError> {
+    let group_by = view
+        .config
+        .get("group_by")
+        .and_then(Json::as_str)
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or(ViewError::Malformed("a board needs config.group_by"))?;
+
+    // The declared options, in the order the property declares them — so board
+    // columns keep a stable, meaningful order ("todo, doing, done") rather than
+    // whatever order the data happened to arrive in.
+    let config: Json = sqlx::query_scalar(
+        "SELECT config FROM collection_properties WHERE id = $1 AND collection_id = $2",
+    )
+    .bind(group_by)
+    .bind(view.collection_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or(ViewError::UnknownProperty)?;
+
+    let declared: Vec<String> = config
+        .get("options")
+        .and_then(Json::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let rows = run(pool, view, workspace_id, user_id, limit).await?;
+
+    let mut groups: Vec<Group> = declared
+        .into_iter()
+        .map(|v| Group {
+            value: Some(v),
+            rows: Vec::new(),
+        })
+        .collect();
+    groups.push(Group {
+        value: None,
+        rows: Vec::new(),
+    });
+
+    for row in rows {
+        let key = row
+            .values
+            .get(&group_by)
+            .and_then(|v| v.as_str().map(str::to_string));
+
+        match groups.iter_mut().find(|g| g.value == key) {
+            Some(g) => g.rows.push(row),
+            // A value the property does not declare — a stale option someone
+            // removed from the schema. It gets its own column rather than
+            // disappearing, because the row still exists and someone has to be
+            // able to move it out.
+            None => groups.insert(
+                groups.len() - 1,
+                Group {
+                    value: key,
+                    rows: vec![row],
+                },
+            ),
+        }
+    }
+
+    Ok(groups)
+}
+
+/// Move a row between board columns by setting its group property.
+///
+/// Setting `None` clears the value, which is how a row is dragged into the "No
+/// value" column.
+pub async fn move_to_group(
+    pool: &sqlx::PgPool,
+    view: &View,
+    page_id: Uuid,
+    value: Option<&str>,
+) -> Result<(), ViewError> {
+    let group_by = view
+        .config
+        .get("group_by")
+        .and_then(Json::as_str)
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or(ViewError::Malformed("a board needs config.group_by"))?;
+
+    let json = value.map(Json::from).unwrap_or(Json::Null);
+    crate::collections::set_value(pool, page_id, group_by, json)
+        .await
+        .map_err(|e| match e {
+            crate::collections::PropertyError::Db(e) => ViewError::Db(e),
+            _ => ViewError::Malformed("the group property rejected that value"),
+        })
+}
+
+/// Rows for a calendar view, keyed by the date property the view names.
+///
+/// Rows with NO date are returned separately rather than dropped: a task with
+/// no due date is exactly the task a user is looking for, and a calendar that
+/// silently omits it hides work.
+pub async fn run_calendar(
+    pool: &sqlx::PgPool,
+    view: &View,
+    workspace_id: Uuid,
+    user_id: Uuid,
+    limit: i64,
+) -> Result<(Vec<(String, Row)>, Vec<Row>), ViewError> {
+    let date_prop = view
+        .config
+        .get("date_property")
+        .and_then(Json::as_str)
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or(ViewError::Malformed("a calendar needs config.date_property"))?;
+
+    let rows = run(pool, view, workspace_id, user_id, limit).await?;
+    let mut dated: Vec<(String, Row)> = Vec::new();
+    let mut undated: Vec<Row> = Vec::new();
+
+    for row in rows {
+        match row.values.get(&date_prop).and_then(|v| v.as_str()) {
+            // Truncated to a day: a calendar cell is a day, and an RFC 3339
+            // timestamp and a bare date must land in the same cell.
+            Some(s) => {
+                let day = s.get(..10).unwrap_or(s).to_string();
+                dated.push((day, row));
+            }
+            None => undated.push(row),
+        }
+    }
+
+    dated.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.page_id.cmp(&b.1.page_id)));
+    Ok((dated, undated))
+}
