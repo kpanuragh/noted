@@ -30,6 +30,20 @@ pub mod summary;
 // or an HTTP client, so it stays unconditional like `extract_worker`.
 pub mod summary_worker;
 
+// The `AnswerProvider` trait + a deterministic stub: synthesis over retrieved
+// context. Pure logic (no db, no network), exactly like `extract` and
+// `summary`, so no feature gate. A real LLM-backed answerer would be a
+// separate, gated module — see this one's header for the non-negotiable it
+// must carry.
+pub mod answer;
+
+// Local graph search end to end: hybrid -> seed chunks -> traversal -> seed
+// entities -> `AnswerProvider`. Needs `noted-db` and `answer`, neither of
+// which drags in `embed`'s ONNX weight or an HTTP client (the question's
+// embedding is a PARAMETER — see the module header), so it stays
+// unconditional like `extract_worker`.
+pub mod graph_search;
+
 // Bridges `extract::Extraction` (name-based, as an extractor emits it) to
 // `noted_db::graph`'s id-based primitive writes. Pure db + logic, no
 // network — unconditional like `extract` above.
