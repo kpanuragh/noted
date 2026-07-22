@@ -1,0 +1,20 @@
+[package]
+name = "noted-plugin"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# `wasmi` rather than a JIT: this is a SANDBOX first and a runtime second. An
+# interpreter has a far smaller attack surface than a JIT, compiles in seconds
+# rather than minutes, and needs no native codegen at runtime — which is exactly
+# the trade a plugin host should make when the code it runs is untrusted.
+wasmi = "0.32"
+thiserror.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# Lets tests express plugins as WebAssembly TEXT, so a fixture is readable in
+# the test file instead of an opaque byte array nobody can audit.
+wat = "1"
