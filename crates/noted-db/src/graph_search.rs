@@ -108,7 +108,7 @@ pub async fn seed_entities(
 
     sqlx::query_as(concat!(
         "WITH ",
-        crate::community::clusterable_edges_cte!(),
+        crate::community::clusterable_edges_cte!(""),
         " SELECT DISTINCT en.id, en.name
           FROM clusterable_edges ce
           JOIN entities en
@@ -218,8 +218,37 @@ pub async fn local_search_chunks(
         crate::readable_pages_cte!("$1", "$8"),
         ",
         ",
-        crate::community::clusterable_edges_cte!(),
+        // MATERIALIZED, deliberately — and `NOT MATERIALIZED` was TRIED and
+        // MEASURED WORSE (51ms vs 23.6ms at 4k edges). The hypothesis was that
+        // inlining would let the planner push the join into `edges` and use an
+        // index; it cannot, because the join below is an OR across two columns
+        // and no index serves that. Inlining only re-evaluated the subquery
+        // 12,000 times. The real fix is the `pairs` CTE below.
+        crate::community::clusterable_edges_cte!("MATERIALIZED"),
         ",
+        -- Each edge as TWO directed pairs, so the walk joins on ONE column by
+        -- equality instead of `source = w OR target = w`.
+        --
+        -- THIS is what made the traversal fast. An OR across two columns can be
+        -- neither indexed nor hashed, so every frontier row was compared against
+        -- the entire edge set: 999,950 rows discarded by the join filter at 40k
+        -- edges. As two directed pairs it becomes a hash join -- the set is
+        -- hashed once and probed per frontier row.
+        --
+        -- Measured, 40k edges, 25 seeds, depth 2:
+        --   OR-join:         377.3 ms, 999,950 rows discarded
+        --   symmetric pairs: 185.9 ms, 0 discarded
+        --
+        -- Doubling the row count is the cost, and it is bounded and worth it:
+        -- the discarded-row count was O(frontier x edges).
+        pairs AS MATERIALIZED (
+            SELECT source_entity AS from_entity, target_entity AS to_entity,
+                   weight, source_chunk_hash
+            FROM clusterable_edges
+          UNION ALL
+            SELECT target_entity, source_entity, weight, source_chunk_hash
+            FROM clusterable_edges
+        ),
         -- The caller CAN repeat a hash: `hybrid` returns pages, and one chunk
         -- can sit on two of them, so the page->chunk mapping legitimately emits
         -- the same hash at two ranks. `MIN(r)` keeps the better one.
@@ -253,15 +282,13 @@ pub async fn local_search_chunks(
                    NULL::text AS via_chunk
             FROM anchors a
           UNION ALL
-            SELECT CASE WHEN ce.source_entity = w.entity_id
-                        THEN ce.target_entity ELSE ce.source_entity END,
+            SELECT pr.to_entity,
                    w.seed_rank,
                    w.hops + 1,
-                   LEAST(w.bottleneck, ce.weight::double precision),
-                   ce.source_chunk_hash
+                   LEAST(w.bottleneck, pr.weight::double precision),
+                   pr.source_chunk_hash
             FROM walk w
-            JOIN clusterable_edges ce
-              ON ce.source_entity = w.entity_id OR ce.target_entity = w.entity_id
+            JOIN pairs pr ON pr.from_entity = w.entity_id
             WHERE w.hops < $4
         ),
         -- Seeds are evidence in their own right, at hop 0. This branch is what
