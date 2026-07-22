@@ -1,4 +1,5 @@
 use sqlx::PgPool;
+use crate::readable_pages_cte;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
@@ -26,9 +27,17 @@ fn escape_like(s: &str) -> String {
 /// `title` directly, rather than wrapping `title` in `lower()` or calling
 /// `similarity()` as a bare function — either of which would force a
 /// sequential scan instead of using `pages_title_trgm_idx`.
+/// `user_id` filters to pages the caller may READ (M4-3).
+///
+/// Threaded through rather than applied afterwards: filtering the result set in
+/// Rust would return fewer than `limit` rows whenever anything was hidden, and
+/// a user with a denied subtree would silently get short pages of results with
+/// no way to tell why. Applying it inside the query means `limit` counts only
+/// rows the caller may actually see.
 pub async fn quick_find(
     pool: &PgPool,
     workspace_id: Uuid,
+    user_id: Uuid,
     q: &str,
     limit: i64,
 ) -> Result<Vec<QuickHit>, sqlx::Error> {
@@ -38,21 +47,25 @@ pub async fn quick_find(
     }
     let escaped = escape_like(q);
 
-    sqlx::query_as::<_, QuickHit>(
-        "SELECT id AS page_id, title,
-                CASE
-                  WHEN lower(title) = lower($2)   THEN 1.0
-                  WHEN title ILIKE $3 || '%'      THEN 0.9
-                  ELSE similarity(title, $2) * 0.8
-                END::real AS rank
-         FROM pages
-         WHERE workspace_id = $1
-           AND archived_at IS NULL
-           AND (title ILIKE '%' || $3 || '%' OR title % $2)
-         ORDER BY rank DESC, title
-         LIMIT $4",
-    )
+    sqlx::query_as::<_, QuickHit>(concat!(
+        "WITH ",
+        readable_pages_cte!(),
+        " SELECT p.id AS page_id, p.title,
+                 CASE
+                   WHEN lower(p.title) = lower($3)   THEN 1.0
+                   WHEN p.title ILIKE $4 || '%'      THEN 0.9
+                   ELSE similarity(p.title, $3) * 0.8
+                 END::real AS rank
+          FROM pages p
+          JOIN readable_pages r ON r.page_id = p.id
+          WHERE p.workspace_id = $1
+            AND p.archived_at IS NULL
+            AND (p.title ILIKE '%' || $4 || '%' OR p.title % $3)
+          ORDER BY rank DESC, p.title
+          LIMIT $5"
+    ))
     .bind(workspace_id)
+    .bind(user_id)
     .bind(q)
     .bind(&escaped)
     .bind(limit)

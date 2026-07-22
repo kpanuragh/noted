@@ -1,5 +1,16 @@
 use noted_db::search;
 
+/// A user for the ACL filter. Every page in these fixtures is readable by
+/// default (no overrides), so the filter is a pass-through here — `tests/acl.rs`
+/// is where the denial behaviour is proven.
+async fn acl_user(pool: &noted_db::PgPool) -> uuid::Uuid {
+    let email = format!("qf{}@example.com", uuid::Uuid::new_v4().simple());
+    noted_db::users::create(pool, &email, "hash", "QF")
+        .await
+        .unwrap()
+        .id
+}
+
 async fn setup() -> (noted_db::PgPool, uuid::Uuid) {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
@@ -25,7 +36,7 @@ async fn an_exact_title_match_ranks_first() {
     let exact = page(&pool, ws, "Quarterly Report").await;
     let _ = page(&pool, ws, "Quarterly Report follow-up actions").await;
 
-    let hits = search::quick_find(&pool, ws, "Quarterly Report", 10).await.unwrap();
+    let hits = search::quick_find(&pool, ws, acl_user(&pool).await, "Quarterly Report", 10).await.unwrap();
     assert!(!hits.is_empty(), "quick find must return the matching pages");
     assert_eq!(hits[0].page_id, exact, "the exact title match must rank first, got {:?}", hits[0].title);
 }
@@ -34,7 +45,7 @@ async fn an_exact_title_match_ranks_first() {
 async fn a_prefix_match_is_found() {
     let (pool, ws) = setup().await;
     let p = page(&pool, ws, "Deployment runbook").await;
-    let hits = search::quick_find(&pool, ws, "Deploy", 10).await.unwrap();
+    let hits = search::quick_find(&pool, ws, acl_user(&pool).await, "Deploy", 10).await.unwrap();
     assert!(hits.iter().any(|h| h.page_id == p), "a prefix of the title must match");
 }
 
@@ -45,7 +56,7 @@ async fn quick_find_is_scoped_to_the_workspace() {
     let (_, ws_b) = setup().await;
     let secret = page(&pool, ws_b, "Acquisition terms").await;
 
-    let hits = search::quick_find(&pool, ws_a, "Acquisition", 10).await.unwrap();
+    let hits = search::quick_find(&pool, ws_a, acl_user(&pool).await, "Acquisition", 10).await.unwrap();
     assert!(
         !hits.iter().any(|h| h.page_id == secret),
         "quick find must never return a page from another workspace"
@@ -58,7 +69,7 @@ async fn archived_pages_are_not_found() {
     let p = page(&pool, ws, "Deleted thing").await;
     sqlx::query("UPDATE pages SET archived_at = now() WHERE id = $1")
         .bind(p).execute(&pool).await.unwrap();
-    let hits = search::quick_find(&pool, ws, "Deleted", 10).await.unwrap();
+    let hits = search::quick_find(&pool, ws, acl_user(&pool).await, "Deleted", 10).await.unwrap();
     assert!(!hits.iter().any(|h| h.page_id == p), "archived pages must not appear");
 }
 
@@ -66,7 +77,7 @@ async fn archived_pages_are_not_found() {
 async fn an_empty_query_returns_nothing_rather_than_everything() {
     let (pool, ws) = setup().await;
     let _ = page(&pool, ws, "Something").await;
-    let hits = search::quick_find(&pool, ws, "   ", 10).await.unwrap();
+    let hits = search::quick_find(&pool, ws, acl_user(&pool).await, "   ", 10).await.unwrap();
     assert!(hits.is_empty(), "a blank query must not dump the whole workspace");
 }
 
@@ -79,13 +90,13 @@ async fn wildcards_in_the_query_are_literal() {
     let done = page(&pool, ws, "50% complete").await;
     let _ = page(&pool, ws, "Nothing to do with numbers").await;
 
-    let hits = search::quick_find(&pool, ws, "50%", 10).await.unwrap();
+    let hits = search::quick_find(&pool, ws, acl_user(&pool).await, "50%", 10).await.unwrap();
     assert!(
         hits.iter().any(|h| h.page_id == done),
         "a literal '50%' in the query must still find the page titled '50% complete'"
     );
 
-    let hits = search::quick_find(&pool, ws, "%", 10).await.unwrap();
+    let hits = search::quick_find(&pool, ws, acl_user(&pool).await, "%", 10).await.unwrap();
     assert!(
         hits.len() < 2,
         "a bare '%' must not act as a wildcard matching every page in the workspace, got {:?}",

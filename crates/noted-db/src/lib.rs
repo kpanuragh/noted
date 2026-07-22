@@ -26,4 +26,9 @@ pub mod users;
 
 // Workspaces and membership — who may name a given workspace_id.
 pub mod workspaces;
+
+// Per-page access control. Exports `readable_pages_cte!` — the ONE definition of
+// "may this user read this page", spliced into every query returning page
+// content rather than paraphrased in each.
+pub mod acl;
 pub mod stats;

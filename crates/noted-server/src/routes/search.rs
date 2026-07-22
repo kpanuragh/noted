@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use noted_db::search::{QuickHit, RelatedHit, SearchHit};
 use uuid::Uuid;
 
@@ -28,9 +28,11 @@ pub struct QuickFindQuery {
 pub async fn quick_find(
     State(st): State<AppState>,
     MemberWorkspace(workspace_id): MemberWorkspace,
+    Extension(user): Extension<noted_db::users::User>,
     Query(q): Query<QuickFindQuery>,
 ) -> Result<Json<Vec<QuickHit>>, AppError> {
-    let hits = noted_db::search::quick_find(&st.pool, workspace_id, &q.q, DEFAULT_LIMIT).await?;
+    let hits =
+        noted_db::search::quick_find(&st.pool, workspace_id, user.id, &q.q, DEFAULT_LIMIT).await?;
     Ok(Json(hits))
 }
 
