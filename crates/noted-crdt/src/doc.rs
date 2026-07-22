@@ -1,6 +1,7 @@
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
-use yrs::{
+use yrs::{Assoc, IndexedSequence, StickyIndex, Text as YText, XmlOut,
+    
     Doc, GetString, ReadTxn, StateVector, Transact, Update, XmlElementPrelim, XmlFragment,
     XmlFragmentRef, XmlTextPrelim,
 };
@@ -172,5 +173,194 @@ pub(crate) fn plain_text<T: ReadTxn>(
             .map(|child| plain_text(&child, txn, depth + 1))
             .collect::<Vec<_>>()
             .join(""),
+    }
+}
+
+/// How many characters an anchor quotes by default.
+///
+/// Long enough to be distinctive within a paragraph, short enough that ordinary
+/// editing NEAR a comment does not orphan it. A comment survives edits after
+/// its quote and before its position; it orphans when the quoted text itself
+/// changes, which is the honest reading of "the thing I commented on is gone".
+pub const QUOTE_LEN: usize = 24;
+
+/// A comment anchor: a position in the document that survives concurrent edits.
+///
+/// # Why not a character offset
+///
+/// A comment stored as "characters 40..55 of block 2" is wrong the moment
+/// anyone inserts text above it — and wrong SILENTLY, pointing at whatever
+/// words happen to occupy those offsets afterwards. That is worse than losing
+/// the comment: a review note attached to the wrong sentence actively misleads
+/// the person reading it.
+///
+/// `yrs::StickyIndex` is the CRDT's own answer. It names a position relative to
+/// the ITEMS around it rather than to a count, so concurrent inserts and
+/// deletes carry it along with the text. When the text it named is deleted
+/// outright, resolving fails — reported as ORPHANED rather than silently
+/// clamped to whatever is nearby.
+///
+/// # Known limit, stated rather than hidden
+///
+/// The anchor tracks the OFFSET WITHIN a block, not which block. `block` is
+/// stored alongside and is a plain index, so reordering top-level blocks can
+/// leave an anchor naming the wrong one. Text editing — the overwhelmingly
+/// common case, and the one the issue's acceptance names — is fully tracked.
+/// Fixing block identity needs a stable id per block, which the ProseMirror
+/// schema does not currently carry; recorded here rather than papered over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Anchor {
+    /// Which top-level block. See the limit above.
+    pub block: usize,
+    /// The encoded `StickyIndex`, opaque bytes as far as the database is
+    /// concerned.
+    pub encoded: Vec<u8>,
+    /// The text this comment was attached to.
+    ///
+    /// # Why a quote is needed as well as a sticky index
+    ///
+    /// `StickyIndex` alone is NOT enough, and the test caught it: when the item
+    /// it names is deleted, yrs does not fail — it CLAMPS to the nearest
+    /// surviving position, which for a emptied paragraph is offset 0. A comment
+    /// on a deleted sentence would silently reappear attached to the start of
+    /// whatever text remains, which is exactly the failure this design exists
+    /// to prevent.
+    ///
+    /// So the anchor also remembers what it was pointing AT, and resolution
+    /// checks the text is still there. This is how Google Docs and GitHub
+    /// detect orphaned comments too — the position tells you where, and the
+    /// quote tells you whether "where" still means anything.
+    pub quote: String,
+}
+
+/// Where an anchor resolves to now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolved {
+    /// The character offset the anchor currently names.
+    At { block: usize, offset: u32 },
+    /// The text this anchor named is gone. The comment still exists and must be
+    /// SHOWN as orphaned — never re-pointed at whatever happens to be nearby.
+    Orphaned,
+}
+
+impl NotedDoc {
+    /// Create an anchor at `offset` within the text of block `block`.
+    ///
+    /// `None` when the block does not exist or holds no text: a caller cannot
+    /// anchor to something that is not there, and inventing a position would
+    /// produce exactly the silent-wrong-place failure this type prevents.
+    pub fn anchor_at(&self, block: usize, offset: u32) -> Option<Anchor> {
+        self.anchor_to(block, offset, QUOTE_LEN)
+    }
+
+    /// As `anchor_at`, quoting `quote_len` characters from the position.
+    pub fn anchor_to(&self, block: usize, offset: u32, quote_len: usize) -> Option<Anchor> {
+        let text = self.block_text(block)?;
+        let quote: String = {
+            let txn = self.doc.transact();
+            let full = text.get_string(&txn);
+            full.chars()
+                .skip(offset as usize)
+                .take(quote_len)
+                .collect()
+        };
+        let mut txn = self.doc.transact_mut();
+        let sticky = text.sticky_index(&mut txn, offset, Assoc::After)?;
+        Some(Anchor {
+            block,
+            encoded: sticky.encode_v1(),
+            quote,
+        })
+    }
+
+    /// Where does this anchor point now?
+    pub fn resolve(&self, anchor: &Anchor) -> Resolved {
+        let Ok(sticky) = StickyIndex::decode_v1(&anchor.encoded) else {
+            return Resolved::Orphaned;
+        };
+        let offset = {
+            let txn = self.doc.transact();
+            match sticky.get_offset(&txn) {
+                Some(abs) => abs.index,
+                None => return Resolved::Orphaned,
+            }
+        };
+
+        // The position resolved — but to WHAT? `StickyIndex` clamps rather than
+        // failing when its item is deleted, so a position alone can point at
+        // text the comment was never about. Verify the quote is still there.
+        if !anchor.quote.is_empty() {
+            let Some(text) = self.block_text(anchor.block) else {
+                return Resolved::Orphaned;
+            };
+            let txn = self.doc.transact();
+            let current: String = text
+                .get_string(&txn)
+                .chars()
+                .skip(offset as usize)
+                .take(anchor.quote.chars().count())
+                .collect();
+            if current != anchor.quote {
+                return Resolved::Orphaned;
+            }
+        }
+
+        Resolved::At {
+            block: anchor.block,
+            offset,
+        }
+    }
+}
+
+impl NotedDoc {
+    /// Insert text into a block. Test-only: production text edits arrive as
+    /// CRDT updates from the editor.
+    pub fn insert_text_for_test(&self, block: usize, offset: u32, text: &str) -> Vec<u8> {
+        let frag = self.fragment();
+        let before = self.doc.transact().state_vector();
+        {
+            if let Some(t) = self.block_text(block) {
+                let mut txn = self.doc.transact_mut();
+                t.insert(&mut txn, offset, text);
+            }
+        }
+        self.doc.transact().encode_diff_v1(&before)
+    }
+
+    /// Delete a range of text from a block. Test-only.
+    pub fn delete_text_for_test(&self, block: usize, offset: u32, len: u32) -> Vec<u8> {
+        let frag = self.fragment();
+        let before = self.doc.transact().state_vector();
+        {
+            if let Some(t) = self.block_text(block) {
+                let mut txn = self.doc.transact_mut();
+                t.remove_range(&mut txn, offset, len);
+            }
+        }
+        self.doc.transact().encode_diff_v1(&before)
+    }
+}
+
+impl NotedDoc {
+    /// The `XmlText` inside top-level block `block`.
+    ///
+    /// A block is an ELEMENT (`<paragraph>`), and its text is a child — so
+    /// `fragment.get(i)` yields the element, not the text. The first version of
+    /// the anchor code matched `XmlOut::Text` on the block itself and therefore
+    /// never found anything, which is why every anchor test failed at once.
+    fn block_text(&self, block: usize) -> Option<yrs::XmlTextRef> {
+        let frag = self.fragment();
+        let txn = self.doc.transact();
+        match frag.get(&txn, block as u32)? {
+            // Already text (a bare text node at top level).
+            XmlOut::Text(t) => Some(t),
+            // The normal case: descend into the element for its first text
+            // child.
+            XmlOut::Element(el) => (0..el.len(&txn)).find_map(|i| match el.get(&txn, i) {
+                Some(XmlOut::Text(t)) => Some(t),
+                _ => None,
+            }),
+            _ => None,
+        }
     }
 }
