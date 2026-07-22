@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use noted_db::stats::WorkspaceStats;
 use uuid::Uuid;
 
@@ -27,9 +27,43 @@ use crate::state::AppState;
 /// `400`.
 pub async fn stats(
     State(st): State<AppState>,
-    Path(workspace_id): Path<Uuid>,
+    crate::membership::MemberWorkspacePath(workspace_id): crate::membership::MemberWorkspacePath,
 ) -> Result<Json<WorkspaceStats>, AppError> {
     let stats =
         noted_db::stats::workspace_stats(&st.pool, workspace_id, st.embedder.model_id()).await?;
     Ok(Json(stats))
+}
+
+/// `GET /api/workspaces` — the workspaces this user belongs to.
+///
+/// The switcher's data source, and the app's bootstrap: the web client no
+/// longer has a hardcoded workspace id, it asks which ones are its own. An
+/// empty list is not an error — it means every workspace was left or deleted,
+/// and the UI offers to make one.
+pub async fn mine(
+    State(st): State<AppState>,
+    Extension(user): Extension<noted_db::users::User>,
+) -> Result<Json<Vec<noted_db::workspaces::Workspace>>, AppError> {
+    Ok(Json(
+        noted_db::workspaces::for_user(&st.pool, user.id).await?,
+    ))
+}
+
+#[derive(serde::Deserialize)]
+pub struct CreateWorkspaceBody {
+    pub name: String,
+}
+
+/// `POST /api/workspaces`
+pub async fn create(
+    State(st): State<AppState>,
+    Extension(user): Extension<noted_db::users::User>,
+    Json(body): Json<CreateWorkspaceBody>,
+) -> Result<(axum::http::StatusCode, Json<noted_db::workspaces::Workspace>), AppError> {
+    let name = body.name.trim();
+    if name.is_empty() {
+        return Err(AppError::BadRequest("a workspace needs a name".into()));
+    }
+    let ws = noted_db::workspaces::create(&st.pool, name, user.id).await?;
+    Ok((axum::http::StatusCode::CREATED, Json(ws)))
 }

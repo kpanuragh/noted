@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useWorkspace } from "@/lib/useWorkspace";
 import Link from "next/link";
 import {
   api,
@@ -10,7 +11,7 @@ import {
 } from "@/lib/api";
 import styles from "@/components/dashboard.module.css";
 
-const WORKSPACE_ID = process.env.NEXT_PUBLIC_WORKSPACE_ID ?? "";
+
 
 type Mode = "local" | "global";
 
@@ -27,6 +28,8 @@ function whyLabel(why: Citation["why"]): string {
 }
 
 export default function AskPage() {
+  const ws = useWorkspace();
+  const workspaceId = ws.status === "ready" ? ws.current : "";
   const [mode, setMode] = useState<Mode>("local");
   const [question, setQuestion] = useState("");
   const [busy, setBusy] = useState(false);
@@ -45,9 +48,9 @@ export default function AskPage() {
     setGlobal(null);
     try {
       if (mode === "local") {
-        setLocal(await api.askLocal(WORKSPACE_ID, q));
+        setLocal(await api.askLocal(workspaceId, q));
       } else {
-        setGlobal(await api.askGlobal(WORKSPACE_ID, q));
+        setGlobal(await api.askGlobal(workspaceId, q));
       }
     } catch {
       setError(

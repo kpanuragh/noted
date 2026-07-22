@@ -93,6 +93,18 @@ export class UnauthorizedError extends Error {
   }
 }
 
+export type Workspace = {
+  id: string;
+  name: string;
+  role: string;
+};
+
+function isWorkspace(v: unknown): v is Workspace {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return typeof o.id === "string" && typeof o.name === "string";
+}
+
 export type Me = {
   id: string;
   email: string;
@@ -407,5 +419,13 @@ export const api = {
       method: "POST",
       credentials: "include",
     });
+  },
+
+  async workspaces(): Promise<Workspace[]> {
+    return json<Workspace[]>(
+      await fetch(new URL("/api/workspaces", API_BASE).toString(), { credentials: "include" }),
+      "/api/workspaces",
+      arrayOf(isWorkspace),
+    );
   },
 };

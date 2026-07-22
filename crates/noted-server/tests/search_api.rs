@@ -13,6 +13,8 @@ async fn app_and_ws() -> (axum::Router, uuid::Uuid) {
     let ws: uuid::Uuid = sqlx::query_scalar(
         "INSERT INTO workspaces (name) VALUES ('search-api') RETURNING id")
         .fetch_one(&pool).await.unwrap();
+    // Created workspaces are not automatically yours (M4-2).
+    common::join(&pool, ws).await;
     sqlx::query("INSERT INTO pages (workspace_id, title) VALUES ($1, 'Deployment runbook')")
         .bind(ws).execute(&pool).await.unwrap();
     (noted_server::app(noted_server::AppState::new_for_test(pool)), ws)

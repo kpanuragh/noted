@@ -15,6 +15,7 @@ async fn test_app() -> (axum::Router, uuid::Uuid) {
             .fetch_one(&pool)
             .await
             .unwrap();
+    common::join(&pool, ws).await;
     (noted_server::app(noted_server::AppState::new_for_test(pool)), ws)
 }
 
@@ -178,8 +179,15 @@ async fn rename_missing_page_returns_404() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
 
+/// Creating a page in an unknown workspace is FORBIDDEN, not a bad request.
+///
+/// It used to be 400: the insert hit a foreign-key violation and the handler
+/// mapped that to `InvalidReference`. Membership (M4-2) now answers earlier and
+/// better — you are not a member of a workspace that does not exist, and the
+/// reply is identical to the one for a workspace that exists and is not yours.
+/// The old 400 quietly distinguished those two cases.
 #[tokio::test]
-async fn create_with_unknown_workspace_returns_400() {
+async fn create_with_unknown_workspace_is_forbidden() {
     let (app, _ws) = test_app().await;
     let res = app
         .oneshot(post(
@@ -190,5 +198,5 @@ async fn create_with_unknown_workspace_returns_400() {
         ))
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }

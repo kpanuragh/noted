@@ -23,4 +23,7 @@ pub mod search;
 // Identity: users and sessions. Primitives only — password and token hashing
 // are policy and live in `noted-server`.
 pub mod users;
+
+// Workspaces and membership — who may name a given workspace_id.
+pub mod workspaces;
 pub mod stats;

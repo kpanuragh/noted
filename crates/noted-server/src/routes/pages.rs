@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use noted_crdt::NotedDoc;
 use noted_db::pages::{self, Page};
@@ -7,6 +7,7 @@ use noted_db::{blocks, docs};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::membership::{MemberPage, MemberWorkspace};
 use crate::state::AppState;
 
 #[derive(serde::Deserialize)]
@@ -16,10 +17,19 @@ pub struct CreateBody {
     pub title: Option<String>,
 }
 
+/// The ONE handler that cannot use `MemberWorkspace`: its workspace id arrives
+/// in the JSON body, not the query string, and a body extractor must run last
+/// (it consumes the request). So the check is explicit here — and it is the
+/// only place in the codebase where "remembering to check" is load-bearing,
+/// which is why `a_member_of_no_workspace_cannot_create_a_page_in_one` exists.
 pub async fn create(
     State(st): State<AppState>,
+    Extension(user): Extension<noted_db::users::User>,
     Json(body): Json<CreateBody>,
 ) -> Result<(StatusCode, Json<Page>), AppError> {
+    if !noted_db::workspaces::is_member(&st.pool, body.workspace_id, user.id).await? {
+        return Err(AppError::Forbidden);
+    }
     let title = body.title.as_deref().unwrap_or("Untitled");
     let page = pages::create(&st.pool, body.workspace_id, body.parent_id, title)
         .await
@@ -32,7 +42,10 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(page)))
 }
 
-pub async fn get(State(st): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<Page>, AppError> {
+pub async fn get(
+    State(st): State<AppState>,
+    MemberPage(id): MemberPage,
+) -> Result<Json<Page>, AppError> {
     pages::get(&st.pool, id)
         .await?
         .map(Json)
@@ -47,10 +60,11 @@ pub struct ListQuery {
 
 pub async fn list(
     State(st): State<AppState>,
+    MemberWorkspace(workspace_id): MemberWorkspace,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Vec<Page>>, AppError> {
     Ok(Json(
-        pages::children(&st.pool, q.workspace_id, q.parent_id).await?,
+        pages::children(&st.pool, workspace_id, q.parent_id).await?,
     ))
 }
 
@@ -88,6 +102,7 @@ pub struct RecentQuery {
 /// `{id}` extractor. `recent_is_not_shadowed_by_the_page_id_route` pins it.
 pub async fn recent(
     State(st): State<AppState>,
+    MemberWorkspace(workspace_id): MemberWorkspace,
     Query(q): Query<RecentQuery>,
 ) -> Result<Json<Vec<Page>>, AppError> {
     let limit = q.limit.unwrap_or(DEFAULT_RECENT_LIMIT);
@@ -101,7 +116,7 @@ pub struct RenameBody {
 
 pub async fn rename(
     State(st): State<AppState>,
-    Path(id): Path<Uuid>,
+    MemberPage(id): MemberPage,
     Json(body): Json<RenameBody>,
 ) -> Result<StatusCode, AppError> {
     let renamed = pages::rename(&st.pool, id, &body.title).await?;
@@ -131,7 +146,7 @@ pub struct ReprojectResponse {
 /// newer state, which is the correct outcome either way.
 pub async fn reproject(
     State(st): State<AppState>,
-    Path(id): Path<Uuid>,
+    MemberPage(id): MemberPage,
 ) -> Result<Json<ReprojectResponse>, AppError> {
     if pages::get(&st.pool, id).await?.is_none() {
         return Err(AppError::NotFound);

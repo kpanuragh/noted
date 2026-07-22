@@ -14,9 +14,10 @@ use uuid::Uuid;
 /// A live session cookie, in `name=value` form, ready for a `cookie` header.
 pub async fn session_cookie(pool: &noted_db::PgPool) -> String {
     let email = format!("t{}@example.com", Uuid::new_v4().simple());
-    let (_user, token) = noted_server::auth::sign_up(pool, &email, "test-password-long", "Test")
+    let (user, token) = noted_server::auth::sign_up(pool, &email, "test-password-long", "Test")
         .await
         .expect("test user creation must succeed");
+    let _ = USER_ID.set(user.id);
     format!("noted_session={token}")
 }
 
@@ -63,4 +64,21 @@ pub async fn ensure_cookie(pool: &noted_db::PgPool) {
 /// The shared session, for a `cookie` header.
 pub fn cookie_header() -> &'static str {
     COOKIE.get().map(String::as_str).unwrap_or("")
+}
+
+/// The user behind [`session_cookie`], so a test can grant them membership.
+static USER_ID: std::sync::OnceLock<Uuid> = std::sync::OnceLock::new();
+
+/// Make the shared test user a member of `workspace_id`.
+///
+/// Existing tests create their fixture workspaces with a raw INSERT, which
+/// (correctly, since M4-2) leaves the caller with no access to them. Rather than
+/// weakening the membership check for tests, they now join the workspace they
+/// just made — which is what a real user creating a workspace does anyway.
+pub async fn join(pool: &noted_db::PgPool, workspace_id: Uuid) {
+    ensure_cookie(pool).await;
+    let user_id = *USER_ID.get().expect("ensure_cookie sets this");
+    noted_db::workspaces::add_member(pool, workspace_id, user_id, "owner")
+        .await
+        .expect("granting test membership must succeed");
 }

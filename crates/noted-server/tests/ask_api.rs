@@ -20,10 +20,19 @@ async fn pool() -> noted_db::PgPool {
 }
 
 async fn workspace(pool: &noted_db::PgPool) -> Uuid {
-    sqlx::query_scalar("INSERT INTO workspaces (name) VALUES ('ask-api-test') RETURNING id")
+    let ws: Uuid = sqlx::query_scalar("INSERT INTO workspaces (name) VALUES ('ask-api-test') RETURNING id")
+
         .fetch_one(pool)
+
         .await
-        .unwrap()
+
+        .unwrap();
+
+    // Created workspaces are not automatically yours (M4-2).
+
+    common::join(&pool, ws).await;
+
+    ws
 }
 
 async fn get(pool: noted_db::PgPool, uri: &str) -> (StatusCode, serde_json::Value) {

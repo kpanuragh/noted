@@ -15,6 +15,7 @@ async fn test_app() -> (axum::Router, noted_db::PgPool, uuid::Uuid) {
             .fetch_one(&pool)
             .await
             .unwrap();
+    common::join(&pool, ws).await;
     (
         noted_server::app(noted_server::AppState::new_for_test(pool.clone())),
         pool,
@@ -230,6 +231,7 @@ async fn stats_does_not_count_another_workspaces_rows() {
             .fetch_one(&pool)
             .await
             .unwrap();
+    common::join(&pool, ws_b).await;
 
     let pb = noted_db::pages::create(&pool, ws_b, None, "Theirs")
         .await
@@ -272,8 +274,17 @@ async fn stats_does_not_count_another_workspaces_rows() {
     );
 }
 
+/// An unknown workspace is FORBIDDEN, not zeroes.
+///
+/// This test previously asserted 200-with-zeroes, on the reasoning that an
+/// unknown workspace and an empty one are indistinguishable so both should read
+/// as empty. Membership (M4-2) makes that reasoning obsolete AND replaces it
+/// with something better: you are not a member of a workspace that does not
+/// exist, so the answer is 403 — the same answer you get for a workspace that
+/// does exist and is not yours. The caller learns nothing about which case they
+/// hit, which is exactly the property the old behaviour could not offer.
 #[tokio::test]
-async fn stats_for_an_unknown_workspace_is_zeroes_not_an_error() {
+async fn stats_for_an_unknown_workspace_is_forbidden_like_any_other_non_membership() {
     let (app, _pool, _ws) = test_app().await;
     let res = app
         .oneshot(get(format!(
@@ -282,9 +293,7 @@ async fn stats_for_an_unknown_workspace_is_zeroes_not_an_error() {
         )))
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let json = body_json(res).await;
-    assert_eq!(json["pages"], 0);
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
