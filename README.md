@@ -26,22 +26,17 @@ Working and tested. **Not production-ready** — read the caveats.
 | Communities (in-house Louvain) + summaries | ✅ |
 | Local & global graph search, Ask UI | ✅ |
 | Workspace dashboard | ✅ |
-| Databases / table / board / calendar views | ❌ not started |
 | Authentication (sessions, argon2id) | ✅ |
 | Multi-workspace membership + tenancy enforcement | ✅ |
 | Per-page permissions with inheritance | ✅ (search surfaces pending, [#26](https://github.com/kpanuragh/noted/issues/26)) |
 | Background indexing + graph reaper | ✅ |
-| **Share links, databases/views, comments, plugins** | ❌ not started |
-| Comments, public API, templates, plugins | ❌ not started |
+| Databases / table / board / calendar views | ❌ not started |
+| **Share links, comments, public API, plugins** | ❌ not started |
 
 **298 Rust tests, 31 web unit tests, 13 end-to-end tests.**
 
 ### Caveats worth reading before you deploy this
 
-- **Authorization stops at the workspace boundary.** Every `/api` route requires a session and
-  proves workspace membership, so tenants are isolated from each other. But there are no
-  per-page permissions yet ([#3](https://github.com/kpanuragh/noted/issues/3)): everyone in a
-  workspace can read and edit everything in it.
 - **Answer synthesis is a stub by default.** Retrieval — which passages, which entities,
   which themes, in what order — is real and fully tested. The prose that wraps it comes from
   a deterministic stub unless you configure a real model. Answer *quality* is unmeasured.
