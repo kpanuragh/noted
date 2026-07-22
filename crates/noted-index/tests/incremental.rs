@@ -646,10 +646,9 @@ async fn edge_weights_are_stored_as_given_and_replaced_on_re_extraction() {
 /// This is deliberately NOT fixed in M2a — a reaper is a real design decision
 /// (what about an entity a user has annotated? is "no live edges" really
 /// death, or just a temporarily-empty node?) and belongs with the clustering
-/// work that first cares. It IS a prerequisite for M2b-1: community detection
-/// clusters over `entities`, and would happily cluster these dead nodes into
-/// communities that describe content no live page contains. See
-/// `.superpowers/sdd/progress.md`.
+/// work that first cares. It IS a prerequisite for community detection, which
+/// clusters over `entities` and would happily cluster these dead nodes into
+/// communities describing content no live page contains.
 ///
 /// If this test ever FAILS because the orphan is gone, that is good news: a
 /// reaper landed. Delete the test and the M2b-1 note together.

@@ -111,10 +111,9 @@ pub trait SummaryProvider: Send + Sync {
 /// M2a's `StubExtractor` was so uniform — single-token names, one entity type,
 /// one relation, a constant weight — that four production paths turned out to
 /// be structurally unreachable by any test using it, and had to be covered
-/// retroactively with hand-built fixtures. The lesson, recorded in
-/// `.superpowers/sdd/progress.md`, is that a stub's job is not only to be
-/// deterministic but to be DISCRIMINATING: a constant output makes whole
-/// classes of wiring bug invisible.
+/// retroactively with hand-built fixtures. The lesson is that a stub's job is
+/// not only to be deterministic but to be DISCRIMINATING: a constant output
+/// makes whole classes of wiring bug invisible.
 ///
 /// So this one's output is a function of the actual membership, and varies
 /// along every axis the worker cares about:

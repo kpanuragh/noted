@@ -594,8 +594,7 @@ async fn replace_chunk_edges_absorbs_a_conflicting_row_its_delete_did_not_cover(
 /// `extraction_progress` now reports (0, 0) for it, nothing will ever revisit
 /// them either. Retracting an archived page's graph needs the same machinery
 /// as reaping orphan entities — nothing in the system removes graph nodes or
-/// edges at all — and both are recorded together as an M2b-1 prerequisite in
-/// `.superpowers/sdd/progress.md`. See also
+/// edges at all — and the two are one job, not two. See also
 /// `orphan_entities_survive_an_edit_with_zero_live_edges_a_known_m2b_gap`.
 ///
 /// Notably NOTHING in the M1b suite broke when this filter was added, because

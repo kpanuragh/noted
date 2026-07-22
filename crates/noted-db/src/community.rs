@@ -283,9 +283,9 @@ pub async fn bump_churn(
 /// comparing two different graphs, and it fails in ways that look exactly like
 /// Louvain non-determinism — you would spend hours debugging the clusterer for
 /// a bug in a WHERE clause. This codebase has produced four separate data bugs
-/// from two code paths disagreeing about what "live" means (see the M2a
-/// standing rule in `.superpowers/sdd/progress.md`), and the fix each time was
-/// to make one definition serve both. So: one const, spliced, never re-typed.
+/// from two code paths disagreeing about what "live" means, and the fix each
+/// time was to make one definition serve both. So: one const, spliced, never
+/// re-typed.
 ///
 /// # `p.workspace_id = e.workspace_id` is load-bearing
 ///

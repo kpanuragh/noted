@@ -90,8 +90,11 @@ pub struct ExtractWorker {
     /// courtesy: the other workspace gets an identical graph slightly early.
     /// Under a real LLM it is not, because extraction is non-deterministic — a
     /// per-tenant run would REWRITE another tenant's already-correct edges for
-    /// that chunk with a different result. Behaviour is unchanged for now; the
-    /// decision is recorded in `.superpowers/sdd/progress.md`.
+    /// that chunk with a different result. Behaviour is unchanged for now.
+    /// The fix, when a real provider lands, is idempotence rather than scoping:
+    /// skip any workspace that already holds a `chunk_extractions` row for
+    /// `(workspace, chunk, model)`. Under a deterministic stub that is a pure
+    /// no-op, which is why nothing here can observe the difference yet.
     workspace_id: Option<Uuid>,
 }
 

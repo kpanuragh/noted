@@ -266,9 +266,9 @@ async fn community_holding(pool: &noted_db::PgPool, ws: Uuid, name: &str) -> Uui
 
 /// The stub must VARY. M2a's `StubExtractor` was so uniform that four
 /// production paths were unreachable by any test using it and had to be covered
-/// retroactively with hand-built fixtures; the lesson recorded in
-/// `.superpowers/sdd/progress.md` is that a constant stub hides whole classes
-/// of wiring bug — most obviously "summary *i* stored against community *j*",
+/// retroactively with hand-built fixtures; the lesson is that a constant stub
+/// hides whole classes of wiring bug — most obviously "summary *i* stored
+/// against community *j*",
 /// which no assertion can catch when every summary is the same string.
 ///
 /// Three axes are pinned here because three separate behaviours depend on them:
