@@ -35,4 +35,7 @@ pub mod acl;
 // Share links: public, tokenised access to one page (and optionally its
 // descendants). Never the workspace, never search.
 pub mod shares;
+
+// Databases: collections of pages with typed properties (M3).
+pub mod collections;
 pub mod stats;
