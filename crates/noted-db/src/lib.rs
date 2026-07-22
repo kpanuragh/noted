@@ -41,4 +41,7 @@ pub mod collections;
 
 // Saved views over a collection, and the filter/sort compiler behind them (M3).
 pub mod views;
+
+// Relations between database rows, and rollups computed over them (M3).
+pub mod relations;
 pub mod stats;
