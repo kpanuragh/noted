@@ -53,4 +53,7 @@ pub mod templates;
 
 // API tokens: programmatic access, scoped per route (M5).
 pub mod api_tokens;
+
+// Threaded comments anchored to CRDT positions, and @-mentions (M5).
+pub mod comments;
 pub mod stats;
