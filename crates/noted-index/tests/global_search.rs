@@ -245,11 +245,7 @@ async fn every_summarised_theme_contributes_a_partial_and_one_reduce_runs() {
     let answerer = Counting::new();
     let summariser = Arc::new(CountingSummariser::new(&model));
 
-    let ans = global_search(
-        &pool,
-        ws,
-        "postgres checkpoint tuning",
-        &answerer,
+    let ans = global_search(&pool, ws, "postgres checkpoint tuning", None, &answerer,
         summariser.clone(),
     )
     .await
@@ -306,11 +302,7 @@ async fn partials_reach_the_reducer_in_relevance_order_not_size_order() {
     let answerer = Counting::new();
     let summariser = Arc::new(CountingSummariser::new(&model));
 
-    let ans = global_search(
-        &pool,
-        ws,
-        "postgres checkpoint tuning",
-        &answerer,
+    let ans = global_search(&pool, ws, "postgres checkpoint tuning", None, &answerer,
         summariser,
     )
     .await
@@ -356,11 +348,7 @@ async fn a_stale_summary_is_used_and_its_refresh_is_triggered() {
     let answerer = Counting::new();
     let summariser = Arc::new(CountingSummariser::new(&model));
 
-    let ans = global_search(
-        &pool,
-        ws,
-        "postgres checkpoint tuning",
-        &answerer,
+    let ans = global_search(&pool, ws, "postgres checkpoint tuning", None, &answerer,
         summariser.clone(),
     )
     .await
@@ -416,11 +404,7 @@ async fn a_current_summary_costs_exactly_zero_regenerations() {
     let answerer = Counting::new();
     let summariser = Arc::new(CountingSummariser::new(&model));
 
-    let ans = global_search(
-        &pool,
-        ws,
-        "postgres checkpoint tuning",
-        &answerer,
+    let ans = global_search(&pool, ws, "postgres checkpoint tuning", None, &answerer,
         summariser.clone(),
     )
     .await
@@ -457,7 +441,7 @@ async fn communities_with_no_summary_are_reported_as_skipped() {
     let answerer = Counting::new();
     let summariser = Arc::new(CountingSummariser::new(&model));
 
-    let ans = global_search(&pool, ws, "postgres tuning", &answerer, summariser)
+    let ans = global_search(&pool, ws, "postgres tuning", None, &answerer, summariser)
         .await
         .unwrap();
 
@@ -491,11 +475,7 @@ async fn another_models_summary_is_not_consulted() {
     let answerer = Counting::new();
     let summariser = Arc::new(CountingSummariser::new(&mine));
 
-    let ans = global_search(
-        &pool,
-        ws,
-        "postgres checkpoint tuning",
-        &answerer,
+    let ans = global_search(&pool, ws, "postgres checkpoint tuning", None, &answerer,
         summariser,
     )
     .await
@@ -538,11 +518,7 @@ async fn global_search_never_reads_another_workspaces_themes() {
     let answerer = Counting::new();
     let summariser = Arc::new(CountingSummariser::new(&model));
 
-    let ans = global_search(
-        &pool,
-        ws,
-        "postgres checkpoint tuning",
-        &answerer,
+    let ans = global_search(&pool, ws, "postgres checkpoint tuning", None, &answerer,
         summariser,
     )
     .await
@@ -564,7 +540,7 @@ async fn no_summaries_means_no_provider_call() {
     let answerer = Counting::new();
     let summariser = Arc::new(CountingSummariser::new(&model));
 
-    let ans = global_search(&pool, ws, "anything at all", &answerer, summariser)
+    let ans = global_search(&pool, ws, "anything at all", None, &answerer, summariser)
         .await
         .unwrap();
 
@@ -601,7 +577,7 @@ async fn an_empty_reduced_answer_is_refused() {
     community_with_summary(&pool, ws, "t", 3, &model, "postgres tuning", "valid").await;
 
     let summariser = Arc::new(CountingSummariser::new(&model));
-    let err = global_search(&pool, ws, "postgres tuning", &EmptyOutput, summariser)
+    let err = global_search(&pool, ws, "postgres tuning", None, &EmptyOutput, summariser)
         .await
         .unwrap_err();
 

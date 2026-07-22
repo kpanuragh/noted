@@ -809,3 +809,141 @@ pub async fn summaries_for_search(
         skipped_unsummarised,
     })
 }
+
+
+// ------------------------------------------------- semantic selection (M6-3) --
+
+/// Store (or replace) the embedding of a community's summary.
+///
+/// `summary_hash` is the hash of the text the vector was made from, so a
+/// regenerated summary can be detected and re-embedded rather than left with a
+/// vector describing prose that no longer exists.
+pub async fn store_summary_embedding(
+    pool: &sqlx::PgPool,
+    community_id: Uuid,
+    model_id: &str,
+    summary_hash: &str,
+    embedding: &[f32],
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO community_summary_embeddings
+             (community_id, model_id, summary_hash, embedding)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (community_id, model_id)
+         DO UPDATE SET summary_hash = EXCLUDED.summary_hash,
+                       embedding = EXCLUDED.embedding,
+                       created_at = now()",
+    )
+    .bind(community_id)
+    .bind(model_id)
+    .bind(summary_hash)
+    .bind(pgvector::Vector::from(embedding.to_vec()))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Summaries whose embedding is missing or stale, for the worker to redo.
+///
+/// A set-difference QUERY, like every other queue here: no status column, no
+/// claim state, and it re-evaluates on every poll so a crash mid-pass costs
+/// nothing.
+pub async fn summaries_needing_embedding(
+    pool: &sqlx::PgPool,
+    workspace_id: Uuid,
+    embed_model: &str,
+    summariser_model: &str,
+    limit: i64,
+) -> Result<Vec<(Uuid, String)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT c.id, s.summary
+         FROM communities c
+         JOIN community_summaries s ON s.community_id = c.id AND s.model_id = $3
+         LEFT JOIN community_summary_embeddings e
+           ON e.community_id = c.id AND e.model_id = $2
+         WHERE c.workspace_id = $1
+           AND (e.community_id IS NULL OR e.summary_hash IS DISTINCT FROM md5(s.summary))
+         ORDER BY c.id
+         LIMIT $4",
+    )
+    .bind(workspace_id)
+    .bind(embed_model)
+    .bind(summariser_model)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+/// Select candidate communities by SEMANTIC similarity to the question.
+///
+/// This is what M6-3 replaces size-ranking with. A question about a niche topic
+/// now reaches the theme that is ABOUT it, rather than the workspace's biggest
+/// themes — and it reaches it even when the summary uses entirely different
+/// words, which is the whole point of an embedding and the thing term overlap
+/// could never do.
+///
+/// Communities whose summary is not yet embedded are NOT silently dropped:
+/// they come back through `summaries_for_search`'s skipped count, so an answer
+/// still reports what it could not consult.
+pub async fn summaries_by_similarity(
+    pool: &sqlx::PgPool,
+    workspace_id: Uuid,
+    summariser_model: &str,
+    embed_model: &str,
+    question_vec: &[f32],
+    limit: i64,
+) -> Result<SummarySelection, sqlx::Error> {
+    let limit = limit.clamp(1, 50);
+
+    let candidates: Vec<SummaryCandidate> = sqlx::query_as::<_, (Uuid, String, String, i64)>(
+        "SELECT c.id, s.summary, s.state, count(cm.entity_id) AS member_count
+         FROM communities c
+         JOIN community_summaries s ON s.community_id = c.id AND s.model_id = $2
+         JOIN community_summary_embeddings e
+           ON e.community_id = c.id AND e.model_id = $3
+         LEFT JOIN community_members cm ON cm.community_id = c.id
+         WHERE c.workspace_id = $1
+         GROUP BY c.id, s.summary, s.state, e.embedding
+         ORDER BY e.embedding <=> $4, c.id
+         LIMIT $5",
+    )
+    .bind(workspace_id)
+    .bind(summariser_model)
+    .bind(embed_model)
+    .bind(pgvector::Vector::from(question_vec.to_vec()))
+    .bind(limit)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|(community_id, summary, state, member_count)| SummaryCandidate {
+        community_id,
+        summary,
+        state,
+        member_count,
+    })
+    .collect();
+
+    // Anything without a usable summary OR without an embedding is unconsulted,
+    // and says so rather than vanishing.
+    let skipped_unsummarised: i64 = sqlx::query_scalar(
+        "SELECT count(*)
+         FROM communities c
+         WHERE c.workspace_id = $1
+           AND NOT EXISTS (
+               SELECT 1 FROM community_summaries s
+               JOIN community_summary_embeddings e
+                 ON e.community_id = s.community_id AND e.model_id = $3
+               WHERE s.community_id = c.id AND s.model_id = $2
+           )",
+    )
+    .bind(workspace_id)
+    .bind(summariser_model)
+    .bind(embed_model)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(SummarySelection {
+        candidates,
+        skipped_unsummarised,
+    })
+}

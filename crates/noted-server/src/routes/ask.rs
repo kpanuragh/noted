@@ -87,10 +87,17 @@ pub async fn global(
         ));
     }
 
+    // Embed the question so themes are selected by MEANING rather than by size
+    // (M6-3). An embedding failure degrades to size-ranking rather than failing
+    // the request — a worse answer beats no answer.
+    let embedded = st.embedder.embed(&[question.to_string()]).await.ok();
+    let q_vec = embedded.and_then(|mut v| v.pop());
+
     let answer = noted_index::global_search::global_search(
         &st.pool,
         workspace_id,
         question,
+        q_vec.as_deref().map(|v| (v, st.embedder.model_id())),
         st.answerer.as_ref(),
         st.summariser.clone(),
     )

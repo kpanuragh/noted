@@ -100,20 +100,47 @@ pub struct GlobalAnswer {
 /// from its weights, and a fluent answer with an empty `partials` list is
 /// indistinguishable from a well-sourced one.
 #[allow(clippy::too_many_arguments)]
+/// `question_vec` selects themes SEMANTICALLY when supplied (M6-3).
+///
+/// `None` falls back to size-ranking, which is what this did before summary
+/// embeddings existed. The fallback is kept rather than removed because a
+/// workspace whose summaries have not been embedded yet must still answer —
+/// degraded and honest beats unavailable.
+#[allow(clippy::too_many_arguments)]
 pub async fn global_search(
     pool: &PgPool,
     workspace_id: Uuid,
     question: &str,
+    question_vec: Option<(&[f32], &str)>,
     answerer: &dyn AnswerProvider,
     summariser: Arc<dyn SummaryProvider>,
 ) -> Result<GlobalAnswer, GlobalSearchError> {
-    let selection = community::summaries_for_search(
-        pool,
-        workspace_id,
-        summariser.model_id(),
-        MAX_COMMUNITIES,
-    )
-    .await?;
+    let selection = match question_vec {
+        // Semantic: reaches the theme the question is ABOUT, even when the
+        // summary says it in different words.
+        Some((vec, embed_model)) => {
+            community::summaries_by_similarity(
+                pool,
+                workspace_id,
+                summariser.model_id(),
+                embed_model,
+                vec,
+                MAX_COMMUNITIES,
+            )
+            .await?
+        }
+        // Size-ranked fallback. Documented as the weaker path rather than
+        // presented as equivalent.
+        None => {
+            community::summaries_for_search(
+                pool,
+                workspace_id,
+                summariser.model_id(),
+                MAX_COMMUNITIES,
+            )
+            .await?
+        }
+    };
 
     if selection.candidates.is_empty() {
         return Ok(GlobalAnswer {
