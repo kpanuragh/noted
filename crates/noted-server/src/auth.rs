@@ -108,6 +108,12 @@ pub async fn sign_up(
         }
         Err(e) => return Err(e.into()),
     };
+    // A user with no workspace has nowhere to write and no way to make one
+    // through the UI, so the account would be inert. Created here rather than
+    // lazily on first use: "signed up but broken until you click something" is
+    // a state worth not having.
+    noted_db::workspaces::create(pool, &format!("{display_name}'s workspace"), user.id).await?;
+
     let token = issue_session(pool, user.id).await?;
     Ok((user, token))
 }

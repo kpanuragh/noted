@@ -58,9 +58,16 @@ pub fn encode_msg(msg: &SyncMsg) -> Vec<u8> {
     out
 }
 
+/// `MemberPage` is deliberately FIRST.
+///
+/// Axum runs extractors in parameter order, so putting the upgrade first would
+/// let a malformed handshake be rejected (400) before anyone asked whether the
+/// caller may see the page at all. Checking membership first means a non-member
+/// gets the same 404 whatever their headers look like, and the answer never
+/// depends on how well-formed their request was.
 pub async fn handler(
+    crate::membership::MemberPage(page_id): crate::membership::MemberPage,
     ws: WebSocketUpgrade,
-    Path(page_id): Path<Uuid>,
     State(st): State<AppState>,
 ) -> Response {
     ws.on_upgrade(move |socket| session(socket, page_id, st))

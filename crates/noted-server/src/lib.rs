@@ -1,5 +1,6 @@
 pub mod error;
 pub mod auth;
+pub mod membership;
 pub mod routes;
 pub mod state;
 
@@ -60,6 +61,10 @@ pub fn app(state: AppState) -> Router {
 
     let protected = Router::new()
         .route("/api/me", get(routes::auth::me))
+        .route(
+            "/api/workspaces",
+            get(routes::workspaces::mine).post(routes::workspaces::create),
+        )
         .route(
             "/api/pages",
             get(routes::pages::list).post(routes::pages::create),

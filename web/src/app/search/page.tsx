@@ -2,10 +2,11 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useWorkspace } from "@/lib/useWorkspace";
 import { useSearchParams } from "next/navigation";
 import { api, type SearchHit } from "@/lib/api";
 
-const WORKSPACE_ID = process.env.NEXT_PUBLIC_WORKSPACE_ID ?? "";
+
 const DEBOUNCE_MS = 200;
 
 /**
@@ -16,6 +17,8 @@ const DEBOUNCE_MS = 200;
  */
 function SearchPage() {
   const searchParams = useSearchParams();
+  const ws = useWorkspace();
+  const workspaceId = ws.status === "ready" ? ws.current : "";
   const [q, setQ] = useState(() => searchParams.get("q") ?? "");
   const [results, setResults] = useState<SearchHit[]>([]);
   const [searched, setSearched] = useState(false);
@@ -23,6 +26,8 @@ function SearchPage() {
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
+    // Wait for the workspace to resolve; searching "" would 400.
+    if (!workspaceId) return;
     if (!q.trim()) {
       setResults([]);
       setSearched(false);
@@ -30,7 +35,7 @@ function SearchPage() {
     }
     debounceRef.current = setTimeout(() => {
       api
-        .search(WORKSPACE_ID, q)
+        .search(workspaceId, q)
         .then((hits) => {
           setResults(hits);
           setSearched(true);
@@ -40,7 +45,7 @@ function SearchPage() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [q]);
+  }, [q, workspaceId]);
 
   return (
     <main style={{ padding: 24 }}>

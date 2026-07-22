@@ -13,6 +13,7 @@ async fn setup() -> (noted_db::PgPool, uuid::Uuid) {
             .fetch_one(&pool)
             .await
             .unwrap();
+    common::join(&pool, ws).await;
     let page: uuid::Uuid =
         sqlx::query_scalar("INSERT INTO pages (workspace_id, title) VALUES ($1, 'p') RETURNING id")
             .bind(ws)

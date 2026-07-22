@@ -10,6 +10,7 @@ use axum::extract::{Query, State};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::membership::MemberWorkspace;
 use crate::state::AppState;
 
 /// Evidence budget for a local search. Not caller-supplied: `local_search`
@@ -30,6 +31,7 @@ pub struct AskQuery {
 /// question is connected to, and every citation says which of those it was.
 pub async fn local(
     State(st): State<AppState>,
+    MemberWorkspace(workspace_id): MemberWorkspace,
     Query(q): Query<AskQuery>,
 ) -> Result<Json<noted_index::graph_search::LocalAnswer>, AppError> {
     let question = q.q.trim();
@@ -53,7 +55,7 @@ pub async fn local(
 
     let answer = noted_index::graph_search::local_search(
         &st.pool,
-        q.workspace_id,
+        workspace_id,
         question,
         &q_vec,
         st.embedder.model_id(),
@@ -73,6 +75,7 @@ pub async fn local(
 /// thinking about?" — and reports how many themes it could NOT consult.
 pub async fn global(
     State(st): State<AppState>,
+    MemberWorkspace(workspace_id): MemberWorkspace,
     Query(q): Query<AskQuery>,
 ) -> Result<Json<noted_index::global_search::GlobalAnswer>, AppError> {
     let question = q.q.trim();
@@ -84,7 +87,7 @@ pub async fn global(
 
     let answer = noted_index::global_search::global_search(
         &st.pool,
-        q.workspace_id,
+        workspace_id,
         question,
         st.answerer.as_ref(),
         st.summariser.clone(),

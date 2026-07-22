@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useWorkspace } from "@/lib/useWorkspace";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { PageTree } from "@/components/PageTree";
@@ -10,7 +11,7 @@ import { PanelBoundary } from "@/components/PanelBoundary";
 import { api } from "@/lib/api";
 import styles from "@/components/dashboard.module.css";
 
-const WORKSPACE_ID = process.env.NEXT_PUBLIC_WORKSPACE_ID ?? "";
+
 
 /**
  * The workspace dashboard: what you were last working on, and what noted has
@@ -19,6 +20,10 @@ const WORKSPACE_ID = process.env.NEXT_PUBLIC_WORKSPACE_ID ?? "";
  * not yet deployed degrades one card instead of blanking the landing page.
  */
 export default function Home() {
+  // Which workspace this is depends on WHO IS SIGNED IN, so it is asked for at
+  // runtime rather than baked in at build time. See `useWorkspace`.
+  const ws = useWorkspace();
+  const workspaceId = ws.status === "ready" ? ws.current : "";
   const router = useRouter();
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState(false);
@@ -27,7 +32,7 @@ export default function Home() {
     setCreating(true);
     setCreateError(false);
     try {
-      const page = await api.createPage(WORKSPACE_ID, null, "Untitled");
+      const page = await api.createPage(workspaceId, null, "Untitled");
       router.push(`/pages/${page.id}`);
     } catch {
       setCreateError(true);
@@ -40,7 +45,7 @@ export default function Home() {
       <nav className={styles.sidebar} aria-label="Pages">
         <h2 className={styles.sidebarHeading}>Pages</h2>
         <PageTree
-          workspaceId={WORKSPACE_ID}
+          workspaceId={workspaceId}
           onSelect={(p) => router.push(`/pages/${p.id}`)}
         />
       </nav>
@@ -77,10 +82,10 @@ export default function Home() {
             blanking this is meant to stop. */}
         <div className={styles.panels}>
           <PanelBoundary title="Recently edited">
-            <RecentPages workspaceId={WORKSPACE_ID} />
+            <RecentPages workspaceId={workspaceId} />
           </PanelBoundary>
           <PanelBoundary title="Your knowledge base">
-            <WorkspaceStatsPanel workspaceId={WORKSPACE_ID} />
+            <WorkspaceStatsPanel workspaceId={workspaceId} />
           </PanelBoundary>
         </div>
       </div>

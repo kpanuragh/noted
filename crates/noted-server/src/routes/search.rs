@@ -4,6 +4,7 @@ use noted_db::search::{QuickHit, RelatedHit, SearchHit};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::membership::{MemberPage, MemberWorkspace};
 use crate::state::AppState;
 
 /// Arbitrary, generous result cap. None of the three endpoints take a
@@ -26,9 +27,10 @@ pub struct QuickFindQuery {
 /// already relies on for its own required `workspace_id`).
 pub async fn quick_find(
     State(st): State<AppState>,
+    MemberWorkspace(workspace_id): MemberWorkspace,
     Query(q): Query<QuickFindQuery>,
 ) -> Result<Json<Vec<QuickHit>>, AppError> {
-    let hits = noted_db::search::quick_find(&st.pool, q.workspace_id, &q.q, DEFAULT_LIMIT).await?;
+    let hits = noted_db::search::quick_find(&st.pool, workspace_id, &q.q, DEFAULT_LIMIT).await?;
     Ok(Json(hits))
 }
 
@@ -52,6 +54,7 @@ pub struct SearchQuery {
 /// multi-second model call. `quick_find` already short-circuits the same way.
 pub async fn search(
     State(st): State<AppState>,
+    MemberWorkspace(workspace_id): MemberWorkspace,
     Query(q): Query<SearchQuery>,
 ) -> Result<Json<Vec<SearchHit>>, AppError> {
     if q.q.trim().is_empty() {
@@ -66,7 +69,7 @@ pub async fn search(
 
     let hits = noted_db::search::hybrid(
         &st.pool,
-        q.workspace_id,
+        workspace_id,
         &q.q,
         &q_vec,
         st.embedder.model_id(),
@@ -86,7 +89,7 @@ pub async fn search(
 /// is checked explicitly first, the same pattern `pages::reproject` uses.
 pub async fn related(
     State(st): State<AppState>,
-    Path(id): Path<Uuid>,
+    MemberPage(id): MemberPage,
 ) -> Result<Json<Vec<RelatedHit>>, AppError> {
     if noted_db::pages::get(&st.pool, id).await?.is_none() {
         return Err(AppError::NotFound);

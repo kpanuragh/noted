@@ -25,6 +25,10 @@ pub enum AppError {
     /// it can carry the shape of the workspace's data.
     #[error("{0}")]
     AskFailed(String),
+    /// The caller is authenticated but not a member of the workspace they
+    /// named. Distinct from 401: signing in again will not help.
+    #[error("you are not a member of that workspace")]
+    Forbidden,
 }
 
 impl IntoResponse for AppError {
@@ -38,6 +42,7 @@ impl IntoResponse for AppError {
             AppError::Embed => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::AskFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::Forbidden => StatusCode::FORBIDDEN,
         };
         // Never leak SQL detail to clients; log it instead.
         if let AppError::Db(ref e) = self {
