@@ -27,15 +27,18 @@ Working and tested. **Not production-ready** — read the caveats.
 | Local & global graph search, Ask UI | ✅ |
 | Workspace dashboard | ✅ |
 | Databases / table / board / calendar views | ❌ not started |
-| **Auth, permissions, sharing** | ❌ **not started** |
+| Authentication (sessions, argon2id) | ✅ |
+| **Permissions, sharing, multi-workspace** | ❌ not started |
 | Comments, public API, templates, plugins | ❌ not started |
 
-**262 Rust tests, 31 web unit tests, 13 end-to-end tests.**
+**275 Rust tests, 31 web unit tests, 13 end-to-end tests.**
 
 ### Caveats worth reading before you deploy this
 
-- **There is no authentication.** None. Every request is trusted, and there is one hardcoded
-  workspace. Do not expose this to a network you do not control.
+- **There is authentication, but no authorization yet.** Every `/api` route requires a session
+  — but any signed-in user can reach any workspace, because workspace membership does not
+  exist yet ([#2](https://github.com/kpanuragh/noted/issues/2)). Treat every account as a
+  full administrator until that lands.
 - **Answer synthesis is a stub by default.** Retrieval — which passages, which entities,
   which themes, in what order — is real and fully tested. The prose that wraps it comes from
   a deterministic stub unless you configure a real model. Answer *quality* is unmeasured.
