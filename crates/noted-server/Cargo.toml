@@ -13,6 +13,11 @@ name = "noted-server"
 path = "src/main.rs"
 
 [dependencies]
+serde_json.workspace = true
+sha2 = "0.10"
+chrono.workspace = true
+argon2.workspace = true
+rand.workspace = true
 noted-db = { path = "../noted-db" }
 noted-crdt = { path = "../noted-crdt" }
 # `embed` is back: hybrid search (GET /api/search) must embed the user's query
@@ -28,7 +33,6 @@ axum = { version = "0.8", features = ["ws"] }
 tokio.workspace = true
 sqlx.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 tracing-subscriber = "0.3"

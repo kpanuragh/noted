@@ -2,11 +2,14 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
+mod common;
+
 async fn test_app() -> (axum::Router, uuid::Uuid) {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
     let pool = noted_db::connect(&url).await.unwrap();
     noted_db::migrate(&pool).await.unwrap();
+    common::ensure_cookie(&pool).await;
     let ws: uuid::Uuid =
         sqlx::query_scalar("INSERT INTO workspaces (name) VALUES ('api-test') RETURNING id")
             .fetch_one(&pool)
@@ -16,7 +19,7 @@ async fn test_app() -> (axum::Router, uuid::Uuid) {
 }
 
 fn post(uri: &str, body: serde_json::Value) -> Request<Body> {
-    Request::builder()
+    Request::builder().header("cookie", common::cookie_header())
         .method("POST")
         .uri(uri)
         .header("content-type", "application/json")
@@ -55,7 +58,7 @@ async fn get_unknown_page_returns_404() {
     let (app, _ws) = test_app().await;
     let res = app
         .oneshot(
-            Request::builder()
+            Request::builder().header("cookie", common::cookie_header())
                 .uri(format!("/api/pages/{}", uuid::Uuid::new_v4()))
                 .body(Body::empty())
                 .unwrap(),
@@ -84,7 +87,7 @@ async fn get_existing_page_returns_200_with_body() {
 
     let res = app
         .oneshot(
-            Request::builder()
+            Request::builder().header("cookie", common::cookie_header())
                 .uri(format!("/api/pages/{id}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -140,7 +143,7 @@ async fn list_returns_only_direct_children() {
 
     let res = app
         .oneshot(
-            Request::builder()
+            Request::builder().header("cookie", common::cookie_header())
                 .uri(format!("/api/pages?workspace_id={ws}&parent_id={root_id}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -163,7 +166,7 @@ async fn rename_missing_page_returns_404() {
     let (app, _ws) = test_app().await;
     let res = app
         .oneshot(
-            Request::builder()
+            Request::builder().header("cookie", common::cookie_header())
                 .method("PATCH")
                 .uri(format!("/api/pages/{}", uuid::Uuid::new_v4()))
                 .header("content-type", "application/json")

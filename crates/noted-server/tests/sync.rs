@@ -6,6 +6,8 @@ use noted_server::routes::sync::{SyncMsg, encode_msg, parse_msg};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
+mod common;
+
 #[test]
 fn parses_sync_step1() {
     let msg = parse_msg(&[0, 0, 1, 2, 3]).unwrap();
@@ -73,8 +75,24 @@ async fn serve(app: axum::Router) -> std::net::SocketAddr {
     addr
 }
 
+/// Connect to the sync socket WITH a session cookie.
+///
+/// The upgrade is an ordinary HTTP request until the moment it is not, so it
+/// carries cookies and the auth middleware sees it like any other route. That
+/// is exactly why `/sync/{page_id}` sits inside the protected router: an
+/// unauthenticated socket would stream a page's entire content, which is a
+/// worse leak than any REST endpoint. `auth_api.rs` asserts the rejection; this
+/// helper is the other half — proving a legitimate client can still connect.
 async fn connect(addr: std::net::SocketAddr, page_id: uuid::Uuid) -> Ws {
-    let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/sync/{page_id}"))
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = format!("ws://{addr}/sync/{page_id}")
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert(
+        "cookie",
+        common::cookie_header().parse().expect("valid cookie header"),
+    );
+    let (ws, _) = tokio_tungstenite::connect_async(request)
         .await
         .expect("failed to connect to sync websocket");
     ws
@@ -135,6 +153,7 @@ async fn setup() -> (noted_db::PgPool, uuid::Uuid) {
         .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
     let pool = noted_db::connect(&url).await.unwrap();
     noted_db::migrate(&pool).await.unwrap();
+    common::ensure_cookie(&pool).await;
     let ws: uuid::Uuid =
         sqlx::query_scalar("INSERT INTO workspaces (name) VALUES ('sync-ws-test') RETURNING id")
             .fetch_one(&pool)
@@ -167,10 +186,9 @@ async fn websocket_session_persists_an_update() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    let url = format!("ws://{addr}/sync/{page_id}");
-    let (mut ws_stream, _resp) = tokio_tungstenite::connect_async(url)
-        .await
-        .expect("failed to connect to sync websocket");
+    // Carries the session like `connect()` does — the sync socket is inside the
+    // protected router, so an upgrade without a cookie is a 401.
+    let mut ws_stream = connect(addr, page_id).await;
 
     // Real CRDT update produced by the same NotedDoc machinery the server
     // uses, so this is a realistic y-protocols Update payload, not a stub.
@@ -227,6 +245,24 @@ async fn two_sessions_on_one_page_share_a_document() {
     // "alpha" is the live broadcast — not the connect-time Step1 handshake.
     let mut a = connect(addr, page_id).await;
     let mut b = connect(addr, page_id).await;
+
+    // Wait for the server's opening handshake frame to B BEFORE A types.
+    //
+    // `connect` returns as soon as the websocket upgrade completes, which is
+    // not the same instant the server has registered B as a subscriber on the
+    // page's hub. If A broadcasts inside that window the update goes to nobody
+    // and B waits out the timeout. The server sends Step1 on connect, so
+    // receiving any frame proves B's session exists server-side.
+    //
+    // The race was always here; adding the auth middleware (one session lookup
+    // per upgrade) widened the window enough to make it fail about one run in
+    // three. Waiting on the handshake closes it properly — raising the timeout
+    // would only have made a real bug take longer to fail.
+    tokio::time::timeout(Duration::from_secs(5), b.next())
+        .await
+        .expect("timed out waiting for B's opening handshake frame")
+        .expect("B's socket closed before the handshake")
+        .expect("B's handshake frame was an error");
 
     // Tab A types.
     let doc_a = NotedDoc::new();
@@ -343,7 +379,7 @@ async fn reproject_repairs_a_corrupted_projection() {
     // Repair.
     let res = noted_server::app(AppState::new_for_test(pool.clone()))
         .oneshot(
-            Request::builder()
+            Request::builder().header("cookie", common::cookie_header())
                 .method("POST")
                 .uri(format!("/api/pages/{page_id}/reproject"))
                 .body(Body::empty())
@@ -383,7 +419,7 @@ async fn reproject_unknown_page_returns_404() {
     let (pool, _page_id) = setup().await;
     let res = noted_server::app(AppState::new_for_test(pool))
         .oneshot(
-            Request::builder()
+            Request::builder().header("cookie", common::cookie_header())
                 .method("POST")
                 .uri(format!("/api/pages/{}/reproject", uuid::Uuid::new_v4()))
                 .body(Body::empty())

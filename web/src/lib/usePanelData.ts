@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { UnauthorizedError } from "./api";
 
 /**
  * A panel's load is in exactly one of three states.
@@ -45,8 +46,15 @@ export function usePanelData<T>(load: () => Promise<T>): {
       .then((data) => {
         if (!cancelled) setState({ status: "ready", data });
       })
-      .catch(() => {
-        if (!cancelled) setState({ status: "failed" });
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        // Signed out is not a panel failure — retrying will never help, and a
+        // dashboard full of "try again" buttons hides what actually happened.
+        if (err instanceof UnauthorizedError) {
+          window.location.href = "/signin";
+          return;
+        }
+        setState({ status: "failed" });
       });
     return () => {
       cancelled = true;

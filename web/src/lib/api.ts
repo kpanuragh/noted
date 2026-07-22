@@ -78,6 +78,38 @@ export type GlobalAnswer = {
   skipped_unsummarised: number;
 };
 
+
+/**
+ * Raised when the API says we have no live session.
+ *
+ * Separate from `ApiShapeError` and from a generic failure because the UI's
+ * response is different in kind: not "try again", but "sign in". Panels catch
+ * it and the app redirects rather than rendering a broken page.
+ */
+export class UnauthorizedError extends Error {
+  constructor() {
+    super("not signed in");
+    this.name = "UnauthorizedError";
+  }
+}
+
+export type Me = {
+  id: string;
+  email: string;
+  display_name: string;
+  created_at: string;
+};
+
+function isMe(v: unknown): v is Me {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.id === "string" &&
+    typeof o.email === "string" &&
+    typeof o.display_name === "string"
+  );
+}
+
 /**
  * Raised when a 200 carries a body that is not the shape this client documents.
  *
@@ -173,6 +205,10 @@ async function json<T>(
   endpoint: string,
   guard: (v: unknown) => v is T,
 ): Promise<T> {
+  // 401 is not "an error occurred", it is "you are signed out" — the caller's
+  // response is a redirect, not a retry. Distinguished here so no panel has to
+  // sniff a status code out of a message string.
+  if (res.status === 401) throw new UnauthorizedError();
   if (!res.ok) throw new Error(`noted API error: ${res.status}`);
 
   let body: unknown;
@@ -258,7 +294,7 @@ export const api = {
     const url = new URL("/api/pages", API_BASE);
     url.searchParams.set("workspace_id", workspaceId);
     if (parentId) url.searchParams.set("parent_id", parentId);
-    return json(await fetch(url.toString()), "/api/pages", arrayOf(isPage));
+    return json(await fetch(url.toString(), { credentials: "include" }), "/api/pages", arrayOf(isPage));
   },
 
   /**
@@ -269,7 +305,7 @@ export const api = {
     const url = new URL("/api/pages/recent", API_BASE);
     url.searchParams.set("workspace_id", workspaceId);
     if (limit !== undefined) url.searchParams.set("limit", String(limit));
-    return json(await fetch(url.toString()), "/api/pages/recent", arrayOf(isPage));
+    return json(await fetch(url.toString(), { credentials: "include" }), "/api/pages/recent", arrayOf(isPage));
   },
 
   async workspaceStats(workspaceId: string): Promise<WorkspaceStats> {
@@ -280,12 +316,12 @@ export const api = {
       `/api/workspaces/${encodeURIComponent(workspaceId)}/stats`,
       API_BASE,
     );
-    return json(await fetch(url.toString()), "/api/workspaces/:id/stats", isWorkspaceStats);
+    return json(await fetch(url.toString(), { credentials: "include" }), "/api/workspaces/:id/stats", isWorkspaceStats);
   },
 
   async getPage(id: string): Promise<Page> {
     const url = new URL(`/api/pages/${encodeURIComponent(id)}`, API_BASE);
-    return json(await fetch(url.toString()), "/api/pages/:id", isPage);
+    return json(await fetch(url.toString(), { credentials: "include" }), "/api/pages/:id", isPage);
   },
 
   async createPage(
@@ -295,6 +331,7 @@ export const api = {
   ): Promise<Page> {
     const res = await fetch(new URL("/api/pages", API_BASE).toString(), {
       method: "POST",
+      credentials: "include",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ workspace_id: workspaceId, parent_id: parentId, title }),
     });
@@ -305,14 +342,14 @@ export const api = {
     const url = new URL("/api/quickfind", API_BASE);
     url.searchParams.set("workspace_id", workspaceId);
     url.searchParams.set("q", q);
-    return json(await fetch(url.toString()), "/api/quickfind", arrayOf(isQuickHit));
+    return json(await fetch(url.toString(), { credentials: "include" }), "/api/quickfind", arrayOf(isQuickHit));
   },
 
   async search(workspaceId: string, q: string): Promise<SearchHit[]> {
     const url = new URL("/api/search", API_BASE);
     url.searchParams.set("workspace_id", workspaceId);
     url.searchParams.set("q", q);
-    return json(await fetch(url.toString()), "/api/search", arrayOf(isSearchHit));
+    return json(await fetch(url.toString(), { credentials: "include" }), "/api/search", arrayOf(isSearchHit));
   },
 
   async related(pageId: string): Promise<RelatedHit[]> {
@@ -320,20 +357,55 @@ export const api = {
       `/api/pages/${encodeURIComponent(pageId)}/related`,
       API_BASE,
     );
-    return json(await fetch(url.toString()), "/api/pages/:id/related", arrayOf(isRelatedHit));
+    return json(await fetch(url.toString(), { credentials: "include" }), "/api/pages/:id/related", arrayOf(isRelatedHit));
   },
 
   async askLocal(workspaceId: string, q: string): Promise<LocalAnswer> {
     const url = new URL("/api/ask/local", API_BASE);
     url.searchParams.set("workspace_id", workspaceId);
     url.searchParams.set("q", q);
-    return json<LocalAnswer>(await fetch(url.toString()), "ask/local", isLocalAnswer);
+    return json<LocalAnswer>(await fetch(url.toString(), { credentials: "include" }), "ask/local", isLocalAnswer);
   },
 
   async askGlobal(workspaceId: string, q: string): Promise<GlobalAnswer> {
     const url = new URL("/api/ask/global", API_BASE);
     url.searchParams.set("workspace_id", workspaceId);
     url.searchParams.set("q", q);
-    return json<GlobalAnswer>(await fetch(url.toString()), "ask/global", isGlobalAnswer);
+    return json<GlobalAnswer>(await fetch(url.toString(), { credentials: "include" }), "ask/global", isGlobalAnswer);
+  },
+
+  async me(): Promise<Me> {
+    return json<Me>(
+      await fetch(new URL("/api/me", API_BASE).toString(), { credentials: "include" }),
+      "/api/me",
+      isMe,
+    );
+  },
+
+  async signIn(email: string, password: string): Promise<Me> {
+    const res = await fetch(new URL("/api/auth/signin", API_BASE).toString(), {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    return json<Me>(res, "/api/auth/signin", isMe);
+  },
+
+  async signUp(email: string, password: string, displayName?: string): Promise<Me> {
+    const res = await fetch(new URL("/api/auth/signup", API_BASE).toString(), {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, password, display_name: displayName }),
+    });
+    return json<Me>(res, "/api/auth/signup", isMe);
+  },
+
+  async signOut(): Promise<void> {
+    await fetch(new URL("/api/auth/signout", API_BASE).toString(), {
+      method: "POST",
+      credentials: "include",
+    });
   },
 };

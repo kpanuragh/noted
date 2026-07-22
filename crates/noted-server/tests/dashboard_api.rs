@@ -2,11 +2,14 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
+mod common;
+
 async fn test_app() -> (axum::Router, noted_db::PgPool, uuid::Uuid) {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
     let pool = noted_db::connect(&url).await.unwrap();
     noted_db::migrate(&pool).await.unwrap();
+    common::ensure_cookie(&pool).await;
     let ws: uuid::Uuid =
         sqlx::query_scalar("INSERT INTO workspaces (name) VALUES ('dash-test') RETURNING id")
             .fetch_one(&pool)
@@ -20,7 +23,7 @@ async fn test_app() -> (axum::Router, noted_db::PgPool, uuid::Uuid) {
 }
 
 fn get(uri: String) -> Request<Body> {
-    Request::builder().uri(uri).body(Body::empty()).unwrap()
+    Request::builder().header("cookie", common::cookie_header()).uri(uri).body(Body::empty()).unwrap()
 }
 
 async fn body_json(res: axum::response::Response) -> serde_json::Value {

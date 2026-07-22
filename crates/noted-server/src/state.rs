@@ -89,6 +89,14 @@ pub struct AppState {
     /// Names the summariser whose community summaries global search may read,
     /// and regenerates the stale ones it encounters. Same stub posture.
     pub summariser: Arc<dyn SummaryProvider>,
+    /// Whether session cookies carry `Secure`.
+    ///
+    /// Defaults to TRUE and is only turned off when `NOTED_INSECURE_COOKIES=1`
+    /// is set — the safe default belongs to production, and the developer on
+    /// plain-HTTP localhost is the one who has to ask. The reverse default
+    /// would mean a deployment that forgot to configure anything ships
+    /// session cookies that travel in the clear.
+    pub cookies_secure: bool,
 }
 
 impl AppState {
@@ -99,6 +107,7 @@ impl AppState {
             embedder,
             answerer: Arc::new(StubAnswerer::new()),
             summariser: Arc::new(StubSummariser::new()),
+            cookies_secure: std::env::var("NOTED_INSECURE_COOKIES").as_deref() != Ok("1"),
         }
     }
 
