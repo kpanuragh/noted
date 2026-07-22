@@ -334,3 +334,96 @@ pub async fn extraction_progress(
     .fetch_one(pool)
     .await
 }
+
+/// Delete edges whose source chunk is no longer referenced by any LIVE page in
+/// their own workspace.
+///
+/// # Why this is not covered by the clustering filter
+///
+/// `clusterable_edges_cte!` already EXCLUDES these at read time, so nothing
+/// surfaces them and correctness never depended on this function. What the
+/// filter cannot do is stop the rows accumulating: archive a page and its edges
+/// sit there forever, invisible and permanent, growing with every edit anyone
+/// ever makes. This is the storage half of the same problem.
+///
+/// The liveness test is deliberately IDENTICAL to the macro's — a chunk is live
+/// for a workspace when a non-archived page OF THAT WORKSPACE references it.
+/// Two content-identical pages in different tenants share a chunk (M1b), so
+/// "some live page somewhere references this" is the wrong question and would
+/// keep one tenant's edges alive on the strength of another tenant's page.
+pub async fn reap_dead_edges(
+    pool: &sqlx::PgPool,
+    workspace_id: Option<Uuid>,
+) -> Result<u64, sqlx::Error> {
+    let deleted = sqlx::query(
+        "DELETE FROM edges e
+         WHERE ($1::uuid IS NULL OR e.workspace_id = $1)
+           AND NOT EXISTS (
+               SELECT 1
+               FROM page_chunks pc
+               JOIN pages p ON p.id = pc.page_id
+               WHERE pc.content_hash = e.source_chunk_hash
+                 AND p.workspace_id = e.workspace_id
+                 AND p.archived_at IS NULL
+           )",
+    )
+    .bind(workspace_id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(deleted)
+}
+
+/// Delete entities that no edge names any more.
+///
+/// MUST RUN AFTER [`reap_dead_edges`], not before: an entity is orphaned by the
+/// removal of the last edge that named it, so reaping entities first would find
+/// nothing to do and leave exactly the nodes the edge sweep was about to
+/// orphan. The two are one job in two statements, and `reap_graph` is the entry
+/// point that gets the order right.
+///
+/// An entity with no edges is unreachable by every surface in the product:
+/// clustering only sees entities via `clusterable_edges_cte!`, local search
+/// anchors through edges, and there is no UI that lists entities directly. So
+/// this deletes nothing anybody could observe — it reclaims storage, and stops
+/// a future feature that DOES list entities from showing a graveyard.
+pub async fn reap_orphan_entities(
+    pool: &sqlx::PgPool,
+    workspace_id: Option<Uuid>,
+) -> Result<u64, sqlx::Error> {
+    let deleted = sqlx::query(
+        "DELETE FROM entities en
+         WHERE ($1::uuid IS NULL OR en.workspace_id = $1)
+           AND NOT EXISTS (
+               SELECT 1 FROM edges e
+               WHERE e.source_entity = en.id OR e.target_entity = en.id
+           )",
+    )
+    .bind(workspace_id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(deleted)
+}
+
+/// How much graph residue a sweep removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Reaped {
+    pub edges: u64,
+    pub entities: u64,
+}
+
+/// Sweep dead edges and then the entities they orphaned, in that order.
+///
+/// Safe to run at any time and safe to interrupt: both statements are ordinary
+/// deletes of rows nothing can reach, so a crash between them leaves the
+/// entities to be collected by the next sweep rather than leaving anything
+/// inconsistent.
+pub async fn reap_graph(
+    pool: &sqlx::PgPool,
+    workspace_id: Option<Uuid>,
+) -> Result<Reaped, sqlx::Error> {
+    let edges = reap_dead_edges(pool, workspace_id).await?;
+    let entities = reap_orphan_entities(pool, workspace_id).await?;
+    Ok(Reaped { edges, entities })
+}

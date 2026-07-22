@@ -187,5 +187,21 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // ------------------------------------------------------------- sweep --
+    //
+    // Collect graph residue: edges whose source chunk no longer belongs to a
+    // live page of their workspace, and the entities that leaves orphaned.
+    // Nothing can reach these rows — clustering and local search both filter
+    // them out at read time — so this reclaims storage rather than fixing
+    // correctness. Run here as well as in the server's scheduler so an operator
+    // can force it without waiting for an idle window.
+    match noted_db::graph::reap_graph(&pool, None).await {
+        Ok(r) if r.edges > 0 || r.entities > 0 => {
+            tracing::info!(edges = r.edges, entities = r.entities, "swept graph residue");
+        }
+        Ok(_) => tracing::info!("no graph residue to sweep"),
+        Err(e) => tracing::warn!(error = %e, "graph sweep failed"),
+    }
+
     Ok(())
 }
