@@ -67,3 +67,26 @@ pub async fn create(
     let ws = noted_db::workspaces::create(&st.pool, name, user.id).await?;
     Ok((axum::http::StatusCode::CREATED, Json(ws)))
 }
+
+/// `GET /api/workspaces/{workspace_id}/indexing`
+///
+/// What the indexer is behind on for this workspace. Surfaced so the UI can say
+/// "12 passages still indexing" instead of quietly returning incomplete search
+/// results — the same "staleness is visible" principle the projection debounce
+/// established in M1a.
+pub async fn indexing(
+    State(st): State<AppState>,
+    crate::membership::MemberWorkspacePath(workspace_id): crate::membership::MemberWorkspacePath,
+) -> Result<Json<noted_index::scheduler::IndexingStatus>, AppError> {
+    // The extraction model is named only when a provider is configured; passing
+    // `None` reports 0-of-0 rather than a backlog nothing will ever drain.
+    let extract_model = st.extract_model.as_deref();
+    let status = noted_index::scheduler::status(
+        &st.pool,
+        st.embedder.model_id(),
+        extract_model,
+        Some(workspace_id),
+    )
+    .await?;
+    Ok(Json(status))
+}
