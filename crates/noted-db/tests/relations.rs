@@ -228,10 +228,14 @@ async fn a_relation_cycle_does_not_hang_the_rollup() {
 /// An unknown rollup function is an error rather than a silent zero.
 #[tokio::test]
 async fn an_unknown_rollup_function_is_refused() {
-    let (pool, _w, project, _r, points, _t) = rollup_fixture("sum").await;
+    let (pool, _w, project, rollup, points, _t) = rollup_fixture("sum").await;
+    // Scoped to THIS fixture's own rollup, not `WHERE kind = 'rollup' LIMIT 1`.
+    // That instance-wide form passed alone and failed in the full suite, because
+    // it picked up another test's property — the exact hazard this suite has a
+    // scar for.
     let projects: Uuid = sqlx::query_scalar(
-        "SELECT collection_id FROM collection_properties WHERE kind = 'rollup' LIMIT 1")
-        .fetch_one(&pool).await.unwrap();
+        "SELECT collection_id FROM collection_properties WHERE id = $1")
+        .bind(rollup).fetch_one(&pool).await.unwrap();
     let bad = sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO collection_properties (collection_id, name, kind, config, position)
          VALUES ($1, 'bad', 'rollup', $2, 5) RETURNING id")
