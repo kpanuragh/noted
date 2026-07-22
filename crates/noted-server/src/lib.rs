@@ -1,4 +1,5 @@
 pub mod error;
+pub mod api_auth;
 pub mod auth;
 pub mod membership;
 pub mod routes;
@@ -104,6 +105,14 @@ pub fn app(state: AppState) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_session,
+        ))
+        // Bearer tokens are a SECOND way in, not a replacement. This runs
+        // before `require_session` (layers apply bottom-up), authenticates a
+        // token if one is present, and falls through untouched when there is
+        // none — so a browser session behaves exactly as before.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::api_auth::token_or_session,
         ));
 
     public

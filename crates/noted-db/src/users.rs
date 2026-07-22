@@ -131,3 +131,20 @@ pub async fn delete_expired_sessions(pool: &sqlx::PgPool) -> Result<u64, sqlx::E
         .await?
         .rows_affected())
 }
+
+/// A user by id, for token authentication.
+///
+/// A token acts as its owner, so the token middleware needs the same `User` the
+/// session middleware produces — which is what makes every permission check and
+/// ACL apply to a token exactly as to a browser.
+pub async fn session_user_by_id(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+) -> Result<Option<User>, sqlx::Error> {
+    sqlx::query_as::<_, User>(
+        "SELECT id, email, display_name, created_at FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+}

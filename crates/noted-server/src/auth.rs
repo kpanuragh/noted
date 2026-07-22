@@ -190,6 +190,18 @@ pub async fn require_session(
     mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    // Already authenticated upstream — an API token acts as its owner and has
+    // put that `User` here (see `api_auth::token_or_session`). Demanding a
+    // cookie as well would mean a token could never reach anything, which is
+    // exactly what happened the first time these two layers were stacked.
+    //
+    // Checked by TYPE rather than by a flag: the only way a `User` gets into
+    // extensions is for some layer to have proven identity, so this cannot be
+    // spoofed by a header.
+    if request.extensions().get::<User>().is_some() {
+        return Ok(next.run(request).await);
+    }
+
     let Some(token) = token_from_headers(request.headers()) else {
         return Err(StatusCode::UNAUTHORIZED);
     };

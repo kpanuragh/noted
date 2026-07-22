@@ -50,4 +50,7 @@ pub mod property_graph;
 
 // Page templates: save a page's shape, stamp out new pages from it (M5).
 pub mod templates;
+
+// API tokens: programmatic access, scoped per route (M5).
+pub mod api_tokens;
 pub mod stats;
