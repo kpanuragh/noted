@@ -31,4 +31,8 @@ pub mod workspaces;
 // "may this user read this page", spliced into every query returning page
 // content rather than paraphrased in each.
 pub mod acl;
+
+// Share links: public, tokenised access to one page (and optionally its
+// descendants). Never the workspace, never search.
+pub mod shares;
 pub mod stats;
