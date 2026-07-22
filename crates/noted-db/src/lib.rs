@@ -38,4 +38,7 @@ pub mod shares;
 
 // Databases: collections of pages with typed properties (M3).
 pub mod collections;
+
+// Saved views over a collection, and the filter/sort compiler behind them (M3).
+pub mod views;
 pub mod stats;
