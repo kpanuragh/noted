@@ -8,11 +8,14 @@ use noted_server::{app, state::AppState};
 use tower::ServiceExt;
 use uuid::Uuid;
 
+mod common;
+
 async fn pool() -> noted_db::PgPool {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
     let pool = noted_db::connect(&url).await.unwrap();
     noted_db::migrate(&pool).await.unwrap();
+    common::ensure_cookie(&pool).await;
     pool
 }
 
@@ -25,7 +28,7 @@ async fn workspace(pool: &noted_db::PgPool) -> Uuid {
 
 async fn get(pool: noted_db::PgPool, uri: &str) -> (StatusCode, serde_json::Value) {
     let response = app(AppState::new_for_test(pool))
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .oneshot(Request::builder().header("cookie", common::cookie_header()).uri(uri).body(Body::empty()).unwrap())
         .await
         .unwrap();
     let status = response.status();

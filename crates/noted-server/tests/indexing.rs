@@ -1,10 +1,13 @@
 use noted_crdt::NotedDoc;
 
+mod common;
+
 async fn setup() -> (noted_db::PgPool, uuid::Uuid) {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
     let pool = noted_db::connect(&url).await.unwrap();
     noted_db::migrate(&pool).await.unwrap();
+    common::ensure_cookie(&pool).await;
     let ws: uuid::Uuid =
         sqlx::query_scalar("INSERT INTO workspaces (name) VALUES ('idx-test') RETURNING id")
             .fetch_one(&pool)

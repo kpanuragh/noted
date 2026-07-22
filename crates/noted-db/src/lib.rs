@@ -19,4 +19,8 @@ pub mod graph;
 pub mod graph_search;
 pub mod pages;
 pub mod search;
+
+// Identity: users and sessions. Primitives only — password and token hashing
+// are policy and live in `noted-server`.
+pub mod users;
 pub mod stats;
