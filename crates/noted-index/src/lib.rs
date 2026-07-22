@@ -44,6 +44,12 @@ pub mod answer;
 // unconditional like `extract_worker`.
 pub mod graph_search;
 
+// Global (theme-anchored) search: map-reduce over community summaries. Needs
+// `noted-db`, `answer` and `summary_worker`; like `graph_search` it takes its
+// providers as parameters and so drags in neither ONNX weights nor an HTTP
+// client. Unconditional.
+pub mod global_search;
+
 // Bridges `extract::Extraction` (name-based, as an extractor emits it) to
 // `noted_db::graph`'s id-based primitive writes. Pure db + logic, no
 // network — unconditional like `extract` above.
