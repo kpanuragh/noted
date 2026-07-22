@@ -57,6 +57,7 @@ pub struct SearchQuery {
 pub async fn search(
     State(st): State<AppState>,
     MemberWorkspace(workspace_id): MemberWorkspace,
+    Extension(user): Extension<noted_db::users::User>,
     Query(q): Query<SearchQuery>,
 ) -> Result<Json<Vec<SearchHit>>, AppError> {
     if q.q.trim().is_empty() {
@@ -72,6 +73,7 @@ pub async fn search(
     let hits = noted_db::search::hybrid(
         &st.pool,
         workspace_id,
+        user.id,
         &q.q,
         &q_vec,
         st.embedder.model_id(),

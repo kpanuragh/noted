@@ -49,7 +49,7 @@ pub async fn quick_find(
 
     sqlx::query_as::<_, QuickHit>(concat!(
         "WITH ",
-        readable_pages_cte!(),
+        readable_pages_cte!("$1", "$2"),
         " SELECT p.id AS page_id, p.title,
                  CASE
                    WHEN lower(p.title) = lower($3)   THEN 1.0
@@ -274,9 +274,22 @@ const RRF_K: f32 = 60.0;
 /// recall for a given `model_id` is bounded by `hnsw.ef_search`, not just by the
 /// candidate LIMIT here — a real near neighbour can be missing from `near`
 /// entirely. The lexical arm's `UNION ALL` in `fused` is unaffected either way.
+/// `user_id` filters to pages the caller may READ (M4-3).
+///
+/// Applied INSIDE both arms rather than to the fused result: the lexical arm
+/// caps at 50 rows and the vector arm at 100 BEFORE fusion, so filtering
+/// afterwards would let denied pages consume that budget and silently shorten
+/// what a permitted user sees.
+///
+/// In the vector arm it rides in the SAME `EXISTS` that already carries the
+/// workspace and archived checks — the shape proven to survive HNSW pushdown
+/// with `hnsw.iterative_scan = relaxed_order`. Adding a separate join around the
+/// ANN scan is exactly how this repo produced three "looks-indexed-but-isn't"
+/// bugs, so the filter goes where the existing one is known to work.
 pub async fn hybrid(
     pool: &PgPool,
     workspace_id: Uuid,
+    user_id: Uuid,
     q: &str,
     q_vec: &[f32],
     model_id: &str,
@@ -295,8 +308,9 @@ pub async fn hybrid(
         .execute(&mut *tx)
         .await?;
 
-    let hits = sqlx::query_as::<_, SearchHit>(
-        "WITH lex AS (
+    let hits = sqlx::query_as::<_, SearchHit>(concat!(
+        "WITH ", readable_pages_cte!("$1", "$7"), ",
+         lex AS (
              SELECT b.page_id, b.text AS snippet,
                     ROW_NUMBER() OVER (
                         ORDER BY ts_rank_cd(to_tsvector('english', b.text),
@@ -305,6 +319,7 @@ pub async fn hybrid(
                     ) AS rank
              FROM blocks b
              JOIN pages p ON p.id = b.page_id
+             JOIN readable_pages r ON r.page_id = p.id
              WHERE p.workspace_id = $1
                AND p.archived_at IS NULL
                AND to_tsvector('english', b.text) @@ plainto_tsquery('english', $2)
@@ -319,6 +334,7 @@ pub async fn hybrid(
                    SELECT 1
                    FROM page_chunks pc
                    JOIN pages p ON p.id = pc.page_id
+                   JOIN readable_pages r ON r.page_id = p.id
                    WHERE pc.content_hash = e.content_hash
                      AND p.workspace_id = $1
                      AND p.archived_at IS NULL
@@ -334,6 +350,7 @@ pub async fn hybrid(
              JOIN chunks c       ON c.content_hash = n.content_hash
              JOIN page_chunks pc ON pc.content_hash = n.content_hash
              JOIN pages p        ON p.id = pc.page_id
+             JOIN readable_pages r ON r.page_id = p.id
              WHERE p.workspace_id = $1
                AND p.archived_at IS NULL
              ORDER BY p.id, n.distance
@@ -355,14 +372,15 @@ pub async fn hybrid(
          JOIN pages p ON p.id = f.page_id
          GROUP BY f.page_id, p.title
          ORDER BY score DESC
-         LIMIT $6",
-    )
+         LIMIT $6"
+    ))
     .bind(workspace_id)
     .bind(q)
     .bind(Vector::from(q_vec.to_vec()))
     .bind(model_id)
     .bind(RRF_K)
     .bind(limit)
+    .bind(user_id)
     .fetch_all(&mut *tx)
     .await?;
 

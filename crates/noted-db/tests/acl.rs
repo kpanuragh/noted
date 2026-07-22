@@ -187,3 +187,204 @@ async fn an_acl_applies_only_to_the_user_it_names() {
         "another member must be unaffected"
     );
 }
+
+// ------------------------------------------------- retrieval surfaces (M4-3b) --
+
+/// A page with a block (so FTS sees it), a chunk, and an embedding.
+async fn searchable_page(
+    pool: &noted_db::PgPool,
+    ws: Uuid,
+    parent: Option<Uuid>,
+    title: &str,
+    text: &str,
+    model: &str,
+    axis: usize,
+) -> (Uuid, String) {
+    let id = page(pool, ws, parent, title).await;
+    sqlx::query(
+        "INSERT INTO blocks (page_id, block_index, node_type, text, content_hash)
+         VALUES ($1, 0, 'paragraph', $2, md5($2))",
+    )
+    .bind(id)
+    .bind(text)
+    .execute(pool)
+    .await
+    .unwrap();
+    let hash = format!("aclq-{}", Uuid::new_v4());
+    noted_db::chunks::upsert(pool, &[(hash.clone(), text.to_string(), 10)])
+        .await
+        .unwrap();
+    noted_db::chunks::set_page_chunks(pool, id, &[hash.clone()])
+        .await
+        .unwrap();
+    let mut v = vec![0.0f32; 768];
+    v[axis] = 1.0;
+    noted_db::chunks::store_embedding(pool, &hash, model, &v)
+        .await
+        .unwrap();
+    (id, hash)
+}
+
+/// **A denied page's CONTENT must not surface through hybrid search.**
+///
+/// Page-addressed routes were already covered by the `MemberPage` extractor;
+/// this is the leak that stayed open — search returns *content*, so a user who
+/// cannot open a page could still read it a snippet at a time.
+///
+/// MECHANISM PROTECTED: the `readable_pages` joins in `hybrid`'s lexical arm and
+/// in the vector arm's `EXISTS`. Remove either and the denied page comes back.
+#[tokio::test]
+async fn a_denied_page_does_not_surface_through_hybrid_search() {
+    let pool = pool().await;
+    let ws = workspace(&pool).await;
+    let allowed_user = user(&pool).await;
+    let denied_user = user(&pool).await;
+    let model = format!("acl-{}", Uuid::new_v4());
+
+    let root = page(&pool, ws, None, "Root").await;
+    let (secret, _) = searchable_page(
+        &pool,
+        ws,
+        Some(root),
+        "Salary review",
+        "the confidential compensation band for staff engineers",
+        &model,
+        11,
+    )
+    .await;
+
+    let mut q_vec = vec![0.0f32; 768];
+    q_vec[11] = 1.0;
+    let q = "confidential compensation band";
+
+    // Premise: a user with no denial DOES find it. Without this the assertion
+    // below could pass because the fixture was never searchable at all.
+    let allowed = noted_db::search::hybrid(&pool, ws, allowed_user, q, &q_vec, &model, 10)
+        .await
+        .unwrap();
+    assert!(
+        allowed.iter().any(|h| h.page_id == secret),
+        "premise: the page must be findable by someone who may read it"
+    );
+
+    acl::set_access(&pool, secret, denied_user, "none")
+        .await
+        .unwrap();
+
+    let denied = noted_db::search::hybrid(&pool, ws, denied_user, q, &q_vec, &model, 10)
+        .await
+        .unwrap();
+    assert!(
+        !denied.iter().any(|h| h.page_id == secret),
+        "a denied page's content must not surface through search"
+    );
+}
+
+/// The same, for quick find — which searches TITLES, so a denial has to hide the
+/// title too.
+#[tokio::test]
+async fn a_denied_page_does_not_surface_through_quick_find() {
+    let pool = pool().await;
+    let ws = workspace(&pool).await;
+    let allowed_user = user(&pool).await;
+    let denied_user = user(&pool).await;
+
+    let root = page(&pool, ws, None, "Root").await;
+    let secret = page(&pool, ws, Some(root), "Acquisition terms").await;
+
+    let allowed = noted_db::search::quick_find(&pool, ws, allowed_user, "Acquisition", 10)
+        .await
+        .unwrap();
+    assert!(
+        allowed.iter().any(|h| h.page_id == secret),
+        "premise: findable by someone who may read it"
+    );
+
+    acl::set_access(&pool, secret, denied_user, "none")
+        .await
+        .unwrap();
+
+    let denied = noted_db::search::quick_find(&pool, ws, denied_user, "Acquisition", 10)
+        .await
+        .unwrap();
+    assert!(
+        !denied.iter().any(|h| h.page_id == secret),
+        "even the TITLE must not leak"
+    );
+}
+
+/// **The subtle one: a denied page must not arrive as a GRAPH HOP.**
+///
+/// Local search reaches chunks through `page_chunks` after traversing edges, so
+/// a page that search itself would never return could still be pulled in
+/// because something readable is connected to it. That is the leak the graph
+/// creates and plain search does not.
+#[tokio::test]
+async fn a_denied_page_does_not_arrive_as_a_graph_hop() {
+    let pool = pool().await;
+    let ws = workspace(&pool).await;
+    let denied_user = user(&pool).await;
+    let model = format!("acl-{}", Uuid::new_v4());
+
+    let root = page(&pool, ws, None, "Root").await;
+    let (public, public_hash) = searchable_page(
+        &pool,
+        ws,
+        Some(root),
+        "Public",
+        "the quarterly planning meeting covered headcount",
+        &model,
+        21,
+    )
+    .await;
+    let (secret, secret_hash) = searchable_page(
+        &pool,
+        ws,
+        Some(root),
+        "Secret",
+        "sourdough starter needs feeding twice daily",
+        &model,
+        400,
+    )
+    .await;
+
+    // One edge chains the two chunks through a shared entity, so the secret is
+    // exactly one hop from the public page.
+    let a = noted_db::graph::resolve_entity(&pool, ws, &format!("a-{}", Uuid::new_v4()), Some("CONCEPT"), None).await.unwrap();
+    let b = noted_db::graph::resolve_entity(&pool, ws, &format!("b-{}", Uuid::new_v4()), Some("CONCEPT"), None).await.unwrap();
+    let c = noted_db::graph::resolve_entity(&pool, ws, &format!("c-{}", Uuid::new_v4()), Some("CONCEPT"), None).await.unwrap();
+    noted_db::graph::replace_chunk_edges(&pool, ws, &public_hash, &model, &[(a, b, "rel".into(), 1.0)]).await.unwrap();
+    noted_db::graph::replace_chunk_edges(&pool, ws, &secret_hash, &model, &[(b, c, "rel".into(), 1.0)]).await.unwrap();
+
+    let seeds = vec![noted_db::graph_search::SeedChunk {
+        content_hash: public_hash.clone(),
+        rank: 1,
+    }];
+
+    // Premise: the hop DOES reach the secret for a user with no denial.
+    let open_user = user(&pool).await;
+    let reachable = noted_db::graph_search::local_search_chunks(&pool, ws, open_user, &seeds, 20)
+        .await
+        .unwrap();
+    assert!(
+        reachable.iter().any(|h| h.page_id == secret),
+        "premise: the graph must actually reach the secret page, or this proves nothing"
+    );
+    assert!(reachable.iter().any(|h| h.page_id == public));
+
+    acl::set_access(&pool, secret, denied_user, "none")
+        .await
+        .unwrap();
+
+    let hits = noted_db::graph_search::local_search_chunks(&pool, ws, denied_user, &seeds, 20)
+        .await
+        .unwrap();
+    assert!(
+        !hits.iter().any(|h| h.page_id == secret),
+        "a denied page must not be reachable as a graph hop"
+    );
+    assert!(
+        hits.iter().any(|h| h.page_id == public),
+        "and the readable seed must still come back"
+    );
+}
