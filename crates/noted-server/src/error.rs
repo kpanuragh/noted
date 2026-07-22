@@ -16,6 +16,15 @@ pub enum AppError {
     CorruptDoc,
     #[error("failed to embed search query")]
     Embed,
+    /// The request itself was malformed in a way the extractors could not catch
+    /// — an empty question, for instance, which is a valid string but not a
+    /// valid question.
+    #[error("{0}")]
+    BadRequest(String),
+    /// A retrieval or synthesis failure. The message is logged, never returned:
+    /// it can carry the shape of the workspace's data.
+    #[error("{0}")]
+    AskFailed(String),
 }
 
 impl IntoResponse for AppError {
@@ -27,6 +36,8 @@ impl IntoResponse for AppError {
             AppError::InvalidReference => StatusCode::BAD_REQUEST,
             AppError::CorruptDoc => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::Embed => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            AppError::AskFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         // Never leak SQL detail to clients; log it instead.
         if let AppError::Db(ref e) = self {

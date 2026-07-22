@@ -114,5 +114,78 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // ---------------------------------------------------------- communities --
+    //
+    // The extraction pass above maintains communities INCREMENTALLY via
+    // `on_edges_changed` (hot path + a cold run when churn crosses the
+    // threshold). This pass exists for the case that cannot cover: a workspace
+    // whose edges were written BEFORE that wiring existed, or whose churn never
+    // crossed the threshold, has entities and no partition at all — and global
+    // search over zero communities returns nothing while looking like a
+    // successful answer.
+    //
+    // So: for every workspace holding a clusterable graph but NO communities,
+    // run the cold path once. Idempotent, and it converges on exactly what the
+    // incremental path would have produced (M2b's convergence property).
+    let unpartitioned: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT e.workspace_id
+         FROM edges e
+         WHERE NOT EXISTS (
+             SELECT 1 FROM communities c WHERE c.workspace_id = e.workspace_id
+         )",
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    for workspace_id in &unpartitioned {
+        match noted_index::community_worker::CommunityWorker::new(pool.clone(), *workspace_id)
+            .cold_run()
+            .await
+        {
+            Ok(n) => tracing::info!(%workspace_id, communities = n, "clustered"),
+            Err(e) => tracing::warn!(error = %e, %workspace_id, "clustering failed; continuing"),
+        }
+    }
+
+    // ------------------------------------------------------------ summaries --
+    //
+    // Gated exactly like extraction, and for the same reason: summarising is an
+    // LLM call, there is no LLM here, and a stub that silently produced
+    // authoritative-looking prose would be worse than no summaries at all. The
+    // warning below is deliberately loud.
+    match std::env::var("NOTED_SUMMARISE").ok().as_deref() {
+        Some("stub") => {
+            tracing::warn!(
+                "NOTED_SUMMARISE=stub: using the deterministic StubSummariser, NOT a real \
+                 model. Community summaries drive GLOBAL search, so this makes that surface \
+                 exercisable locally — it does not make its answers meaningful."
+            );
+            let summariser = std::sync::Arc::new(noted_index::summary::StubSummariser::new());
+            let workspaces: Vec<uuid::Uuid> =
+                sqlx::query_scalar("SELECT DISTINCT workspace_id FROM communities")
+                    .fetch_all(&pool)
+                    .await?;
+            for workspace_id in &workspaces {
+                let worker = noted_index::summary_worker::SummaryWorker::new(
+                    pool.clone(),
+                    summariser.clone(),
+                    *workspace_id,
+                );
+                match worker.run_once().await {
+                    Ok(pass) => tracing::info!(%workspace_id, ?pass, "summarised"),
+                    Err(e) => {
+                        tracing::warn!(error = %e, %workspace_id, "summarising failed; continuing")
+                    }
+                }
+            }
+        }
+        _ => {
+            tracing::info!(
+                "no summariser configured (set NOTED_SUMMARISE=stub for local testing); \
+                 skipping the summary pass. GLOBAL search will find no themes until this runs."
+            );
+        }
+    }
+
     Ok(())
 }

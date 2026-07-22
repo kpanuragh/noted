@@ -42,6 +42,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/pages/{id}/related", get(routes::search::related))
         .route("/api/quickfind", get(routes::search::quick_find))
         .route("/api/search", get(routes::search::search))
+        .route("/api/ask/local", get(routes::ask::local))
+        .route("/api/ask/global", get(routes::ask::global))
         .route(
             "/api/workspaces/{workspace_id}/stats",
             get(routes::workspaces::stats),
