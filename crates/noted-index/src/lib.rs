@@ -50,6 +50,16 @@ pub mod graph_search;
 // client. Unconditional.
 pub mod global_search;
 
+// The background indexer. Needs the workers and `noted-db`; the providers are
+// parameters, so like `graph_search` it drags in neither ONNX weights nor an
+// HTTP client. Unconditional.
+//
+// Gated behind `embed` because it drives the embedding `Worker`, which is
+// itself gated — a deployment that does not embed has nothing for the
+// scheduler to schedule.
+#[cfg(feature = "embed")]
+pub mod scheduler;
+
 // Bridges `extract::Extraction` (name-based, as an extractor emits it) to
 // `noted_db::graph`'s id-based primitive writes. Pure db + logic, no
 // network — unconditional like `extract` above.

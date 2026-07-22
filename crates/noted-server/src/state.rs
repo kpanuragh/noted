@@ -97,6 +97,11 @@ pub struct AppState {
     /// would mean a deployment that forgot to configure anything ships
     /// session cookies that travel in the clear.
     pub cookies_secure: bool,
+    /// The extraction model id, when an extraction provider is configured.
+    ///
+    /// `None` means extraction is not running, and the indexing status reports
+    /// 0-of-0 rather than a backlog that will never drain.
+    pub extract_model: Option<String>,
 }
 
 impl AppState {
@@ -108,6 +113,13 @@ impl AppState {
             answerer: Arc::new(StubAnswerer::new()),
             summariser: Arc::new(StubSummariser::new()),
             cookies_secure: std::env::var("NOTED_INSECURE_COOKIES").as_deref() != Ok("1"),
+            extract_model: match std::env::var("NOTED_EXTRACT").ok().as_deref() {
+                Some("stub") => {
+                    use noted_index::extract::ExtractionProvider;
+                    Some(noted_index::extract::StubExtractor::new().model_id().to_string())
+                }
+                _ => None,
+            },
         }
     }
 

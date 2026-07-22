@@ -86,6 +86,10 @@ pub fn app(state: AppState) -> Router {
             "/api/workspaces/{workspace_id}/stats",
             get(routes::workspaces::stats),
         )
+        .route(
+            "/api/workspaces/{workspace_id}/indexing",
+            get(routes::workspaces::indexing),
+        )
         .route("/sync/{page_id}", get(routes::sync::handler))
         // Anything that falls through to here is an unknown path UNDER the
         // protected router. It still passes through the middleware first, so an
