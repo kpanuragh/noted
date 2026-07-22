@@ -428,4 +428,18 @@ export const api = {
       arrayOf(isWorkspace),
     );
   },
+
+  async renamePage(id: string, title: string): Promise<void> {
+    const res = await fetch(
+      new URL(`/api/pages/${encodeURIComponent(id)}`, API_BASE).toString(),
+      {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title }),
+      },
+    );
+    if (res.status === 401) throw new UnauthorizedError();
+    if (!res.ok) throw new Error(`rename failed: ${res.status}`);
+  },
 };
