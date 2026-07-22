@@ -144,9 +144,17 @@ pub struct LocalAnswer {
 /// with an empty citation list is the single worst output this surface can
 /// produce — it looks exactly like a well-sourced one. `no_evidence_means_no_provider_call`
 /// asserts the call count with `==`, guarded by a preceding call that DID run.
+/// `user_id` filters every retrieved passage to pages the caller may READ.
+///
+/// Threaded all the way down rather than applied to the answer: the seeds come
+/// from `hybrid` (which filters), and the traversal reaches chunks through
+/// `page_chunks`, so a denied page could otherwise arrive as a GRAPH HOP even
+/// though search itself would never return it. That hop is the subtle leak this
+/// parameter closes.
 pub async fn local_search(
     pool: &PgPool,
     workspace_id: Uuid,
+    user_id: Uuid,
     question: &str,
     q_vec: &[f32],
     model_id: &str,
@@ -155,7 +163,7 @@ pub async fn local_search(
 ) -> Result<LocalAnswer, LocalSearchError> {
     let k = k.clamp(1, MAX_LOCAL_LIMIT);
 
-    let pages = search::hybrid(pool, workspace_id, question, q_vec, model_id, k).await?;
+    let pages = search::hybrid(pool, workspace_id, user_id, question, q_vec, model_id, k).await?;
     let seeds = seeds_from_pages(pool, &pages).await?;
 
     // Retrieve MORE candidates than we will return, then reserve room for the
@@ -166,7 +174,7 @@ pub async fn local_search(
     // seeds fill all six slots and the graph contributes NOTHING — local search
     // degenerates into hybrid search at exactly the sizes a user asks for.
     let budget = (k * CANDIDATE_MULTIPLIER).clamp(1, MAX_LOCAL_LIMIT);
-    let hits = noted_db::graph_search::local_search_chunks(pool, workspace_id, &seeds, budget)
+    let hits = noted_db::graph_search::local_search_chunks(pool, workspace_id, user_id, &seeds, budget)
         .await?;
     let hits = reserve_graph_slots(hits, k);
     let entities = noted_db::graph_search::seed_entities(pool, workspace_id, &seeds).await?;

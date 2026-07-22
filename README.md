@@ -28,12 +28,12 @@ Working and tested. **Not production-ready** — read the caveats.
 | Workspace dashboard | ✅ |
 | Authentication (sessions, argon2id) | ✅ |
 | Multi-workspace membership + tenancy enforcement | ✅ |
-| Per-page permissions with inheritance | ✅ (search surfaces pending, [#26](https://github.com/kpanuragh/noted/issues/26)) |
+| Per-page permissions, enforced on every retrieval surface | ✅ |
 | Background indexing + graph reaper | ✅ |
 | Databases / table / board / calendar views | ❌ not started |
 | **Share links, comments, public API, plugins** | ❌ not started |
 
-**298 Rust tests, 31 web unit tests, 13 end-to-end tests.**
+**301 Rust tests, 31 web unit tests, 13 end-to-end tests.**
 
 ### Caveats worth reading before you deploy this
 
@@ -46,9 +46,6 @@ Working and tested. **Not production-ready** — read the caveats.
 - **Global search selects themes by size, not by meaning.** Ranking summaries semantically
   needs a third embedding space that does not exist yet, so a question about a niche topic
   maps over your *largest* themes, which may not include it.
-- **Search and Ask are not yet per-page filtered** ([#26](https://github.com/kpanuragh/noted/issues/26)).
-  Page fetches, quick find and the sync socket enforce per-page ACLs; hybrid search and the two
-  Ask surfaces are workspace-scoped only, so a denied page's *content* can still surface there.
 
 ---
 

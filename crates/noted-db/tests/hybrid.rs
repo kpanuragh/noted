@@ -9,6 +9,13 @@ fn unique_model() -> String {
     format!("test-model-{}", uuid::Uuid::new_v4())
 }
 
+/// A user for the ACL filter. These fixtures set no overrides, so the filter is
+/// a pass-through — `tests/acl.rs` proves the denial behaviour.
+async fn acl_user(pool: &noted_db::PgPool) -> uuid::Uuid {
+    let email = format!("hy{}@example.com", uuid::Uuid::new_v4().simple());
+    noted_db::users::create(pool, &email, "hash", "T").await.unwrap().id
+}
+
 async fn setup() -> (noted_db::PgPool, uuid::Uuid) {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
@@ -96,7 +103,7 @@ async fn an_exact_rare_term_is_found_by_the_lexical_arm() {
     }
 
     // Query vector deliberately points at the decoys' axis: only FTS can win on rank.
-    let hits = search::hybrid(&pool, ws, "ECONNREFUSED", &vec_at(700), &model, 10).await.unwrap();
+    let hits = search::hybrid(&pool, ws, acl_user(&pool).await, "ECONNREFUSED", &vec_at(700), &model, 10).await.unwrap();
 
     let target_pos = hits.iter().position(|h| h.page_id == target).expect(
         "an exact rare term must be found via the lexical arm even when the vector arm buries it behind closer decoys",
@@ -154,7 +161,7 @@ async fn a_semantic_match_is_found_by_the_vector_arm() {
     }
 
     // Query words appear nowhere in the target's text; only the vector arm can find it.
-    let hits = search::hybrid(&pool, ws, "zzzznomatchzzz", &vec_at(3), &model, 10).await.unwrap();
+    let hits = search::hybrid(&pool, ws, acl_user(&pool).await, "zzzznomatchzzz", &vec_at(3), &model, 10).await.unwrap();
 
     let target_pos = hits.iter().position(|h| h.page_id == target).expect(
         "a semantic match must be found via the vector arm even when lexical decoys share the query words",
@@ -200,7 +207,7 @@ async fn hybrid_vector_arm_ignores_other_models() {
     noted_db::chunks::set_page_chunks(&pool, decoy, &[decoy_hash.clone()]).await.unwrap();
     noted_db::chunks::store_embedding(&pool, &decoy_hash, "other-model", &vec_at(5)).await.unwrap();
 
-    let hits = search::hybrid(&pool, ws, "irrelevant-query-term", &vec_at(5), &model, 10).await.unwrap();
+    let hits = search::hybrid(&pool, ws, acl_user(&pool).await, "irrelevant-query-term", &vec_at(5), &model, 10).await.unwrap();
     assert!(
         hits.iter().any(|h| h.page_id == target),
         "the target embedding under the queried model must be found by the vector arm"
@@ -226,7 +233,7 @@ async fn a_page_found_by_both_arms_outranks_one_found_by_only_one() {
     let both = page_with(&pool, ws, "Both", "postgres postgres tuning advice", 5, &model).await;
     let lex_only = page_with(&pool, ws, "LexOnly", "postgres unrelated topic", 600, &model).await;
 
-    let hits = search::hybrid(&pool, ws, "postgres", &vec_at(5), &model, 10).await.unwrap();
+    let hits = search::hybrid(&pool, ws, acl_user(&pool).await, "postgres", &vec_at(5), &model, 10).await.unwrap();
     assert!(hits.len() >= 2, "both pages match lexically and must both be returned");
     assert_eq!(
         hits[0].page_id, both,
@@ -248,7 +255,7 @@ async fn hybrid_is_scoped_to_the_workspace() {
     let model = unique_model();
     let secret = page_with(&pool, ws_b, "Secret", "acquisition terms and price", 9, &model).await;
 
-    let hits = search::hybrid(&pool, ws_a, "acquisition", &vec_at(9), &model, 10).await.unwrap();
+    let hits = search::hybrid(&pool, ws_a, acl_user(&pool).await, "acquisition", &vec_at(9), &model, 10).await.unwrap();
     assert!(
         !hits.iter().any(|h| h.page_id == secret),
         "search must never cross a workspace boundary"
@@ -260,6 +267,6 @@ async fn an_empty_query_returns_nothing() {
     let (pool, ws) = setup().await;
     let model = unique_model();
     let _ = page_with(&pool, ws, "Thing", "some text here", 0, &model).await;
-    let hits = search::hybrid(&pool, ws, "  ", &vec_at(0), &model, 10).await.unwrap();
+    let hits = search::hybrid(&pool, ws, acl_user(&pool).await, "  ", &vec_at(0), &model, 10).await.unwrap();
     assert!(hits.is_empty(), "a blank query must not dump the workspace");
 }

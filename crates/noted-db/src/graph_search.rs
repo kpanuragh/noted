@@ -193,9 +193,16 @@ pub async fn seed_entities(
 /// tenant's page resolved and returned. That predicate is load-bearing on the
 /// seed path specifically, and `seed_chunks_never_resolve_to_another_workspaces_page`
 /// deletes it to prove so.
+/// `user_id` filters every returned passage to pages the caller may READ.
+///
+/// This is where the graph creates a leak that plain search does not: the
+/// traversal reaches chunks through `page_chunks` AFTER walking edges, so a page
+/// that search itself would never return can still be pulled in because
+/// something readable is connected to it. Filtering here closes the hop.
 pub async fn local_search_chunks(
     pool: &PgPool,
     workspace_id: Uuid,
+    user_id: Uuid,
     seeds: &[SeedChunk],
     limit: i64,
 ) -> Result<Vec<GraphHit>, sqlx::Error> {
@@ -208,6 +215,9 @@ pub async fn local_search_chunks(
 
     sqlx::query_as(concat!(
         "WITH RECURSIVE ",
+        crate::readable_pages_cte!("$1", "$8"),
+        ",
+        ",
         crate::community::clusterable_edges_cte!(),
         ",
         -- The caller CAN repeat a hash: `hybrid` returns pages, and one chunk
@@ -291,6 +301,7 @@ pub async fn local_search_chunks(
             JOIN chunks c       ON c.content_hash = b.content_hash
             JOIN page_chunks pc ON pc.content_hash = b.content_hash
             JOIN pages p        ON p.id = pc.page_id
+            JOIN readable_pages r ON r.page_id = p.id
             WHERE p.workspace_id = $1
               AND p.archived_at IS NULL
             ORDER BY p.id, b.content_hash
@@ -307,6 +318,7 @@ pub async fn local_search_chunks(
     .bind(RRF_K)
     .bind(HOP_DECAY)
     .bind(limit)
+    .bind(user_id)
     .fetch_all(pool)
     .await
 }

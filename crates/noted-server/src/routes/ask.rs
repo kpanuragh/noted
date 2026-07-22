@@ -6,7 +6,7 @@
 //! genuinely different shapes. Collapsing them would mean a response type that
 //! is half-empty whichever way it is called.
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::{Extension, Query, State};
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -32,6 +32,7 @@ pub struct AskQuery {
 pub async fn local(
     State(st): State<AppState>,
     MemberWorkspace(workspace_id): MemberWorkspace,
+    Extension(user): Extension<noted_db::users::User>,
     Query(q): Query<AskQuery>,
 ) -> Result<Json<noted_index::graph_search::LocalAnswer>, AppError> {
     let question = q.q.trim();
@@ -56,6 +57,7 @@ pub async fn local(
     let answer = noted_index::graph_search::local_search(
         &st.pool,
         workspace_id,
+        user.id,
         question,
         &q_vec,
         st.embedder.model_id(),

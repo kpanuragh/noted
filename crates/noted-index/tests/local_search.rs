@@ -36,6 +36,13 @@ async fn connect() -> noted_db::PgPool {
     pool
 }
 
+/// A user for the ACL filter. These fixtures set no overrides, so the filter is
+/// a pass-through — `noted-db`'s `tests/acl.rs` proves the denial behaviour.
+async fn acl_user(pool: &noted_db::PgPool) -> Uuid {
+    let email = format!("ls{}@example.com", Uuid::new_v4().simple());
+    noted_db::users::create(pool, &email, "hash", "T").await.unwrap().id
+}
+
 async fn workspace(pool: &noted_db::PgPool) -> Uuid {
     sqlx::query_scalar("INSERT INTO workspaces (name) VALUES ('local-search-test') RETURNING id")
         .fetch_one(pool)
@@ -262,7 +269,7 @@ async fn a_graph_reached_page_is_cited_and_the_citation_says_why() {
 
     // PREMISE: at this k, plain hybrid does not return BETA. Without this the
     // test could pass on a page the graph never had to reach.
-    let plain = noted_db::search::hybrid(&pool, ws, question, &q_vec, &model, 6)
+    let plain = noted_db::search::hybrid(&pool, ws, acl_user(&pool).await, question, &q_vec, &model, 6)
         .await
         .unwrap();
     assert!(
@@ -275,7 +282,7 @@ async fn a_graph_reached_page_is_cited_and_the_citation_says_why() {
     );
 
     let provider = Counting::new();
-    let ans = local_search(&pool, ws, question, &q_vec, &model, &provider, 6)
+    let ans = local_search(&pool, ws, acl_user(&pool).await, question, &q_vec, &model, &provider, 6)
         .await
         .unwrap();
 
@@ -379,7 +386,7 @@ async fn citation_order_follows_hybrid_rank() {
     )
     .await;
 
-    let plain = noted_db::search::hybrid(&pool, ws, question, &q_vec, &model, 10)
+    let plain = noted_db::search::hybrid(&pool, ws, acl_user(&pool).await, question, &q_vec, &model, 10)
         .await
         .unwrap();
     let ids: Vec<Uuid> = plain.iter().map(|h| h.page_id).collect();
@@ -389,7 +396,7 @@ async fn citation_order_follows_hybrid_rank() {
         "PREMISE: hybrid must rank FIRST above SECOND, or this test measures nothing"
     );
 
-    let ans = local_search(&pool, ws, question, &q_vec, &model, &StubAnswerer::new(), 10)
+    let ans = local_search(&pool, ws, acl_user(&pool).await, question, &q_vec, &model, &StubAnswerer::new(), 10)
         .await
         .unwrap();
 
@@ -438,7 +445,7 @@ async fn no_evidence_means_no_provider_call() {
 
     let provider = Counting::new();
 
-    let found = local_search(&pool, stocked, question, &q_vec, &model, &provider, 5)
+    let found = local_search(&pool, stocked, acl_user(&pool).await, question, &q_vec, &model, &provider, 5)
         .await
         .unwrap();
     assert!(
@@ -447,7 +454,7 @@ async fn no_evidence_means_no_provider_call() {
     );
     assert_eq!(provider.calls(), 1);
 
-    let none = local_search(&pool, empty, question, &q_vec, &model, &provider, 5)
+    let none = local_search(&pool, empty, acl_user(&pool).await, question, &q_vec, &model, &provider, 5)
         .await
         .unwrap();
     assert!(none.citations.is_empty());
@@ -494,12 +501,12 @@ async fn an_empty_answer_is_refused_rather_than_presented() {
     .await;
 
     // SANITY: this fixture does produce evidence, so the provider IS reached.
-    let ok = local_search(&pool, ws, question, &q_vec, &model, &StubAnswerer::new(), 5)
+    let ok = local_search(&pool, ws, acl_user(&pool).await, question, &q_vec, &model, &StubAnswerer::new(), 5)
         .await
         .unwrap();
     assert!(!ok.citations.is_empty());
 
-    let err = local_search(&pool, ws, question, &q_vec, &model, &EmptyOutput, 5)
+    let err = local_search(&pool, ws, acl_user(&pool).await, question, &q_vec, &model, &EmptyOutput, 5)
         .await
         .expect_err("an empty answer must not be presented as an answer");
     match err {
@@ -549,12 +556,12 @@ async fn a_zero_k_is_clamped_rather_than_returning_nothing() {
 
     // SANITY: a normal k returns both, so the fixture has more than one page to
     // clamp down to.
-    let plenty = local_search(&pool, ws, question, &q_vec, &model, &StubAnswerer::new(), 5)
+    let plenty = local_search(&pool, ws, acl_user(&pool).await, question, &q_vec, &model, &StubAnswerer::new(), 5)
         .await
         .unwrap();
     assert_eq!(plenty.citations.len(), 2);
 
-    let clamped = local_search(&pool, ws, question, &q_vec, &model, &StubAnswerer::new(), 0)
+    let clamped = local_search(&pool, ws, acl_user(&pool).await, question, &q_vec, &model, &StubAnswerer::new(), 0)
         .await
         .unwrap();
     assert_eq!(
@@ -627,7 +634,7 @@ async fn the_prompt_carries_the_provenance_of_every_passage() {
 
     // PREMISE: BETA must be reachable ONLY through the graph, or the hop-note
     // assertion below is vacuous.
-    let plain = noted_db::search::hybrid(&pool, ws, question, &q_vec, &model, 6)
+    let plain = noted_db::search::hybrid(&pool, ws, acl_user(&pool).await, question, &q_vec, &model, 6)
         .await
         .unwrap();
     assert!(
@@ -640,7 +647,7 @@ async fn the_prompt_carries_the_provenance_of_every_passage() {
     );
 
     let provider = Recording(std::sync::Mutex::new(None));
-    let ans = local_search(&pool, ws, question, &q_vec, &model, &provider, 6)
+    let ans = local_search(&pool, ws, acl_user(&pool).await, question, &q_vec, &model, &provider, 6)
         .await
         .unwrap();
     assert_eq!(ans.answer, "recorded");

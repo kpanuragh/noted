@@ -26,6 +26,16 @@ async fn pool() -> noted_db::PgPool {
 /// Every fixture gets its OWN workspace. Tests share a dev database, so
 /// workspace scoping is what keeps one test's entities out of another's
 /// traversal — and `entities`' `UNIQUE (workspace_id, name)` out of the way.
+/// A user for the ACL filter. These fixtures set no overrides, so the filter is
+/// a pass-through — `tests/acl.rs` proves the denial behaviour.
+async fn acl_user(pool: &noted_db::PgPool) -> Uuid {
+    let email = format!("gs{}@example.com", Uuid::new_v4().simple());
+    noted_db::users::create(pool, &email, "hash", "T")
+        .await
+        .unwrap()
+        .id
+}
+
 async fn workspace(pool: &noted_db::PgPool) -> Uuid {
     sqlx::query_scalar("INSERT INTO workspaces (name) VALUES ('gs-test') RETURNING id")
         .fetch_one(pool)
@@ -262,7 +272,7 @@ async fn local_search_finds_a_page_that_hybrid_search_ranks_out() {
     edge(&pool, ws, &beta_chunk, &model, person, hobby, 1.0).await;
 
     // --- PREMISE (1): at the k a user would actually ask for, hybrid misses it.
-    let hybrid_k = noted_db::search::hybrid(&pool, ws, question, &q_vec, &model, 6)
+    let hybrid_k = noted_db::search::hybrid(&pool, ws, acl_user(&pool).await, question, &q_vec, &model, 6)
         .await
         .unwrap();
     assert!(
@@ -277,7 +287,7 @@ async fn local_search_finds_a_page_that_hybrid_search_ranks_out() {
 
     // --- PREMISE (2): and no larger k rescues it, because hybrid ranks it
     // below pages that are relevant to nothing.
-    let hybrid_all = noted_db::search::hybrid(&pool, ws, question, &q_vec, &model, 50)
+    let hybrid_all = noted_db::search::hybrid(&pool, ws, acl_user(&pool).await, question, &q_vec, &model, 50)
         .await
         .unwrap();
     let beta_pos = hybrid_all
@@ -298,7 +308,7 @@ async fn local_search_finds_a_page_that_hybrid_search_ranks_out() {
 
     // --- THE PAYOFF.
     let seeds = seeds_from_hybrid(&pool, &hybrid_k).await;
-    let local = graph_search::local_search_chunks(&pool, ws, &seeds, 50)
+    let local = graph_search::local_search_chunks(&pool, ws, acl_user(&pool).await, &seeds, 50)
         .await
         .unwrap();
 
@@ -351,7 +361,7 @@ async fn an_empty_graph_degrades_to_the_seed_chunks() {
             rank: 2,
         },
     ];
-    let hits = graph_search::local_search_chunks(&pool, ws, &seeds, 50)
+    let hits = graph_search::local_search_chunks(&pool, ws, acl_user(&pool).await, &seeds, 50)
         .await
         .unwrap();
 
@@ -415,7 +425,7 @@ async fn the_traversal_stops_at_max_hops() {
         content_hash: c12,
         rank: 1,
     }];
-    let hits = graph_search::local_search_chunks(&pool, ws, &seeds, 50)
+    let hits = graph_search::local_search_chunks(&pool, ws, acl_user(&pool).await, &seeds, 50)
         .await
         .unwrap();
 
@@ -497,7 +507,7 @@ async fn an_archived_pages_edge_cannot_be_traversed_through() {
 
     // Before archiving, GAMMA is reachable — so its later absence is caused by
     // the archive and not by a broken fixture.
-    let before = graph_search::local_search_chunks(&pool, ws, &seeds, 50)
+    let before = graph_search::local_search_chunks(&pool, ws, acl_user(&pool).await, &seeds, 50)
         .await
         .unwrap();
     assert!(
@@ -507,7 +517,7 @@ async fn an_archived_pages_edge_cannot_be_traversed_through() {
 
     archive(&pool, dead).await;
 
-    let after = graph_search::local_search_chunks(&pool, ws, &seeds, 50)
+    let after = graph_search::local_search_chunks(&pool, ws, acl_user(&pool).await, &seeds, 50)
         .await
         .unwrap();
     assert!(
@@ -544,7 +554,7 @@ async fn an_archived_page_sharing_a_live_chunk_is_still_never_returned() {
         content_hash: shared,
         rank: 1,
     }];
-    let hits = graph_search::local_search_chunks(&pool, ws, &seeds, 50)
+    let hits = graph_search::local_search_chunks(&pool, ws, acl_user(&pool).await, &seeds, 50)
         .await
         .unwrap();
 
@@ -628,7 +638,7 @@ async fn another_workspaces_edges_are_never_traversed() {
         content_hash: seed_chunk,
         rank: 1,
     }];
-    let hits = graph_search::local_search_chunks(&pool, ws_a, &seeds, 50)
+    let hits = graph_search::local_search_chunks(&pool, ws_a, acl_user(&pool).await, &seeds, 50)
         .await
         .unwrap();
 
@@ -665,7 +675,7 @@ async fn seed_chunks_never_resolve_to_another_workspaces_page() {
         content_hash: shared,
         rank: 1,
     }];
-    let hits = graph_search::local_search_chunks(&pool, ws_a, &seeds, 50)
+    let hits = graph_search::local_search_chunks(&pool, ws_a, acl_user(&pool).await, &seeds, 50)
         .await
         .unwrap();
 
@@ -760,7 +770,7 @@ async fn ranking_is_monotone_in_hops_seed_rank_and_edge_weight() {
             rank: 100,
         },
     ];
-    let hits = graph_search::local_search_chunks(&pool, ws, &seeds, 50)
+    let hits = graph_search::local_search_chunks(&pool, ws, acl_user(&pool).await, &seeds, 50)
         .await
         .unwrap();
 
@@ -845,7 +855,7 @@ async fn a_chunk_appearing_twice_on_one_page_is_returned_once() {
         content_hash: hash,
         rank: 1,
     }];
-    let hits = graph_search::local_search_chunks(&pool, ws, &seeds, 50)
+    let hits = graph_search::local_search_chunks(&pool, ws, acl_user(&pool).await, &seeds, 50)
         .await
         .unwrap();
     assert_eq!(hits.len(), 1, "one page, one chunk, one citation");
@@ -948,7 +958,7 @@ async fn no_seeds_returns_nothing() {
     let pool = pool().await;
     let ws = workspace(&pool).await;
     assert!(
-        graph_search::local_search_chunks(&pool, ws, &[], 10)
+        graph_search::local_search_chunks(&pool, ws, acl_user(&pool).await, &[], 10)
             .await
             .unwrap()
             .is_empty()
@@ -979,7 +989,7 @@ async fn the_result_limit_is_clamped_in_the_repository() {
         });
     }
 
-    let zero = graph_search::local_search_chunks(&pool, ws, &seeds, 0)
+    let zero = graph_search::local_search_chunks(&pool, ws, acl_user(&pool).await, &seeds, 0)
         .await
         .unwrap();
     assert_eq!(
@@ -988,7 +998,7 @@ async fn the_result_limit_is_clamped_in_the_repository() {
         "a zero limit is treated as 1, never as unlimited"
     );
 
-    let huge = graph_search::local_search_chunks(&pool, ws, &seeds, 10_000)
+    let huge = graph_search::local_search_chunks(&pool, ws, acl_user(&pool).await, &seeds, 10_000)
         .await
         .unwrap();
     assert_eq!(huge.len(), 3, "and an absurd limit is capped, not obeyed");

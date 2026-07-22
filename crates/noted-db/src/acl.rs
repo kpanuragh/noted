@@ -28,23 +28,32 @@ use uuid::Uuid;
 /// than up from each page looking for an ancestor. Both express the same rule;
 /// walking down visits each page once, while walking up re-walks the whole
 /// ancestor chain per page.
+/// Takes the PLACEHOLDER NUMBERS for the workspace and user parameters, e.g.
+/// `readable_pages_cte!("$1", "$2")`.
+///
+/// Parameterised rather than fixed at `$1`/`$2` so a query with its own
+/// parameter layout can splice this without renumbering everything it already
+/// binds — and, more importantly, without anyone being tempted to write a
+/// second copy of the rule with different numbers. One definition, many
+/// call sites.
 #[macro_export]
 macro_rules! readable_pages_cte {
-    () => {
+    ($ws:literal, $user:literal) => {
+        concat!(
         "readable_pages AS (
              WITH RECURSIVE effective(id, access) AS (
                  SELECT p.id, COALESCE(a.access, 'read')
                  FROM pages p
-                 LEFT JOIN page_acls a ON a.page_id = p.id AND a.user_id = $2
-                 WHERE p.workspace_id = $1 AND p.parent_id IS NULL
+                 LEFT JOIN page_acls a ON a.page_id = p.id AND a.user_id = ", $user, "
+                 WHERE p.workspace_id = ", $ws, " AND p.parent_id IS NULL
                UNION ALL
                  SELECT c.id, COALESCE(a.access, e.access)
                  FROM effective e
                  JOIN pages c ON c.parent_id = e.id
-                 LEFT JOIN page_acls a ON a.page_id = c.id AND a.user_id = $2
+                 LEFT JOIN page_acls a ON a.page_id = c.id AND a.user_id = ", $user, "
              )
              SELECT id AS page_id FROM effective WHERE access <> 'none'
-         )"
+         )")
     };
 }
 
@@ -130,7 +139,7 @@ pub async fn readable_pages(
 ) -> Result<Vec<Uuid>, sqlx::Error> {
     sqlx::query_scalar(concat!(
         "WITH ",
-        readable_pages_cte!(),
+        readable_pages_cte!("$1", "$2"),
         " SELECT page_id FROM readable_pages"
     ))
     .bind(workspace_id)
