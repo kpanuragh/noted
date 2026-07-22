@@ -29,10 +29,12 @@ Working and tested. **Not production-ready** — read the caveats.
 | Databases / table / board / calendar views | ❌ not started |
 | Authentication (sessions, argon2id) | ✅ |
 | Multi-workspace membership + tenancy enforcement | ✅ |
-| **Per-page permissions, sharing** | ❌ not started |
+| Per-page permissions with inheritance | ✅ (search surfaces pending, [#26](https://github.com/kpanuragh/noted/issues/26)) |
+| Background indexing + graph reaper | ✅ |
+| **Share links, databases/views, comments, plugins** | ❌ not started |
 | Comments, public API, templates, plugins | ❌ not started |
 
-**281 Rust tests, 31 web unit tests, 13 end-to-end tests.**
+**298 Rust tests, 31 web unit tests, 13 end-to-end tests.**
 
 ### Caveats worth reading before you deploy this
 
@@ -49,8 +51,9 @@ Working and tested. **Not production-ready** — read the caveats.
 - **Global search selects themes by size, not by meaning.** Ranking summaries semantically
   needs a third embedding space that does not exist yet, so a question about a niche topic
   maps over your *largest* themes, which may not include it.
-- Indexing is a CLI you run. Writing a page updates the graph incrementally once extraction
-  runs, but nothing schedules that for you yet.
+- **Search and Ask are not yet per-page filtered** ([#26](https://github.com/kpanuragh/noted/issues/26)).
+  Page fetches, quick find and the sync socket enforce per-page ACLs; hybrid search and the two
+  Ask surfaces are workspace-scoped only, so a denied page's *content* can still surface there.
 
 ---
 
@@ -77,7 +80,9 @@ Open <http://localhost:3000>.
 
 ### Making search and the graph work
 
-Writing a page stores it, but retrieval needs the indexer. Run it after you have some notes:
+The server indexes in the background, so writing a page is enough to make it searchable. The
+CLI below is for backfilling an existing corpus, or for running extraction without turning it
+on in the server:
 
 ```bash
 # Embeddings only. First run downloads ~400MB of ONNX weights into .fastembed_cache/
