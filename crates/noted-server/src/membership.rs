@@ -80,6 +80,27 @@ impl FromRequestParts<AppState> for MemberPage {
             .await
             .map_err(|_| StatusCode::NOT_FOUND)?;
 
+        // Membership got them into the workspace; the page ACL decides whether
+        // they may see THIS page (M4-3). Checked here rather than in each
+        // handler for the same reason membership is: a handler written tomorrow
+        // inherits it, and one written by someone who forgot cannot leak.
+        //
+        // Same 404 as a non-member, deliberately: "exists but not for you" is
+        // information about what is in the workspace.
+        let user = parts
+            .extensions
+            .get::<User>()
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+        let readable = noted_db::acl::can_read(&st.pool, page_id, user.id)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "page acl lookup failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        if !readable {
+            return Err(StatusCode::NOT_FOUND);
+        }
+
         Ok(MemberPage(page_id))
     }
 }
