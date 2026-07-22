@@ -47,4 +47,7 @@ pub mod relations;
 
 // Projecting typed property values into the knowledge graph (M3-5).
 pub mod property_graph;
+
+// Page templates: save a page's shape, stamp out new pages from it (M5).
+pub mod templates;
 pub mod stats;
