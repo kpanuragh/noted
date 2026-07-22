@@ -47,6 +47,15 @@ pub const IDLE_INTERVAL: Duration = Duration::from_secs(15);
 /// hours because the scheduler slept fifteen seconds between batches.
 pub const BUSY_INTERVAL: Duration = Duration::from_millis(250);
 
+/// How many idle passes between graph sweeps.
+///
+/// The reaper collects rows nothing can reach, so it is never urgent and its
+/// cost is two full-table deletes. Running it every pass would spend that on
+/// nothing almost every time; running it only at startup would let residue
+/// accumulate for the life of a long-running process. Every 40 idle passes is
+/// roughly every ten minutes at `IDLE_INTERVAL`.
+pub const SWEEP_EVERY_N_IDLE_PASSES: u32 = 40;
+
 /// What the indexer is behind on, for the UI to show honestly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct IndexingStatus {
@@ -137,11 +146,13 @@ impl Scheduler {
         let stopping = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopping_task = stopping.clone();
 
+        let sweep_pool = pool.clone();
         let embed_worker = Worker::new(pool.clone(), embedder)?;
         let extract_worker = extractor.map(|e| ExtractWorker::new(pool.clone(), e));
 
         let handle = tokio::spawn(async move {
             use std::sync::atomic::Ordering;
+            let mut idle_passes: u32 = 0;
             loop {
                 // Before the pass: a `stop()` that landed while the previous
                 // sleep was running must not cost another whole pass.
@@ -159,8 +170,26 @@ impl Scheduler {
                 }
 
                 let wait = if did_work {
+                    idle_passes = 0;
                     BUSY_INTERVAL
                 } else {
+                    idle_passes = idle_passes.saturating_add(1);
+                    // Swept only while IDLE, and only every so often: a sweep
+                    // during a backlog would compete with indexing for the same
+                    // database, to collect rows that are in nobody's way.
+                    if idle_passes % SWEEP_EVERY_N_IDLE_PASSES == 0 {
+                        match noted_db::graph::reap_graph(&sweep_pool, None).await {
+                            Ok(r) if r.edges > 0 || r.entities > 0 => {
+                                tracing::info!(
+                                    edges = r.edges,
+                                    entities = r.entities,
+                                    "swept graph residue from archived pages"
+                                );
+                            }
+                            Ok(_) => {}
+                            Err(e) => tracing::warn!(error = %e, "graph sweep failed; will retry"),
+                        }
+                    }
                     IDLE_INTERVAL
                 };
 
