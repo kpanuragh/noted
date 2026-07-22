@@ -203,6 +203,11 @@ A few conventions this codebase holds to, learned the hard way:
 
 ---
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) — particularly the testing discipline, which is the
+part of this codebase most likely to surprise you.
+
 ## License
 
-AGPL-3.0-or-later (declared in `Cargo.toml`; a `LICENSE` file has not been added yet).
+[AGPL-3.0-or-later](LICENSE).
