@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo } from "react";
 import { EditorContent, useEditor, type Editor as TiptapEditor } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
 import Collaboration from "@tiptap/extension-collaboration";
 import * as Y from "yjs";
 import { createProvider } from "@/lib/provider";
+import { editorExtensions } from "@/lib/editorExtensions";
 import s from "./editor.module.css";
 
 /**
@@ -59,9 +59,7 @@ export function Editor({ pageId }: { pageId: string }) {
     {
       immediatelyRender: false,
       extensions: [
-        // Collaboration owns history; StarterKit's own must be disabled or
-        // undo/redo fights the CRDT.
-        StarterKit.configure({ undoRedo: false }),
+        ...editorExtensions(),
         // `field` must match noted_crdt::ROOT on the server.
         Collaboration.configure({ document: doc, field: "prosemirror" }),
       ],
