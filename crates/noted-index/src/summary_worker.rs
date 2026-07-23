@@ -162,6 +162,15 @@ pub struct SummaryPass {
 /// pending under a new model id, of which a bounded, unordered query would
 /// have drained four, forever.
 ///
+///
+/// MEMBERLESS COMMUNITIES ARE EXCLUDED. A community with no members has
+/// nothing to describe, so summarising it means paying a full model call to
+/// turn an empty list into prose — real money on a hosted model and, measured
+/// here, ~130 seconds each on a local one. They arise legitimately: reaping
+/// entities off archived pages can empty a community without removing it. On
+/// the database this was found against they were 4526 of 5684 communities,
+/// i.e. 80% of the queue was work that could not produce a usable summary.
+///
 /// Oldest pending community first, so the queue drains FIFO and a workspace
 /// leaves it as soon as its summaries are written. A workspace whose
 /// summariser calls keep failing does hold its slot — but it holds one of
@@ -175,9 +184,10 @@ pub async fn workspaces_with_pending_summaries(
         "SELECT c.workspace_id
          FROM communities c
          LEFT JOIN community_summaries s ON s.community_id = c.id
-         WHERE s.community_id IS NULL
+         WHERE EXISTS (SELECT 1 FROM community_members m WHERE m.community_id = c.id)
+           AND (s.community_id IS NULL
             OR s.member_set_hash IS DISTINCT FROM c.member_set_hash
-            OR s.model_id IS DISTINCT FROM $1
+            OR s.model_id IS DISTINCT FROM $1)
          GROUP BY c.workspace_id
          ORDER BY min(c.created_at)
          LIMIT $2",
@@ -244,6 +254,10 @@ pub async fn pending_summaries(
          FROM communities c
          LEFT JOIN community_summaries s ON s.community_id = c.id
          WHERE c.workspace_id = $1
+           -- See `workspaces_with_pending_summaries`: a memberless community
+           -- has nothing to describe, and queueing it buys an empty summary
+           -- for the price of a full model call.
+           AND EXISTS (SELECT 1 FROM community_members m WHERE m.community_id = c.id)
            AND (s.community_id IS NULL
                 OR s.member_set_hash IS DISTINCT FROM c.member_set_hash
                 OR s.model_id IS DISTINCT FROM $2)

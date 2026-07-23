@@ -323,6 +323,22 @@ async fn the_scheduler_summarises_communities_without_the_cli() {
     }
     scheduler.stop().await;
 
+    // CLEAN UP THE BACKDATING BEFORE ASSERTING.
+    //
+    // The `1970-01-01` above is not inert test data: this database is shared
+    // with the running application, and a backdated community sits at the HEAD
+    // of the instance-wide summary queue for as long as it exists. Left behind,
+    // every run of this test pins one more workspace in front of real user
+    // data — which is exactly what happened, and it starved a real workspace of
+    // summaries until the rows were found and removed.
+    //
+    // Before the assertions, so a failing assertion still cleans up.
+    sqlx::query("DELETE FROM communities WHERE workspace_id = $1")
+        .bind(ws)
+        .execute(&pool)
+        .await
+        .unwrap();
+
     assert!(
         summarised,
         "the scheduler never summarised the community; global search would have \
