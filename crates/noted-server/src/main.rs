@@ -6,7 +6,18 @@ use noted_server::{AppState, app};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Before anything reads the environment. `dotenv` does NOT override
+    // variables that are already set, which is the precedence you want: a
+    // value exported in the shell, or injected by the container runtime, beats
+    // the file on disk. A missing `.env` is not an error — it is the normal
+    // case in a container, where the environment arrives from compose.
+    let loaded = dotenvy::dotenv();
     tracing_subscriber::fmt::init();
+    match loaded {
+        Ok(path) => tracing::info!("loaded environment from {}", path.display()),
+        Err(e) if e.not_found() => {}
+        Err(e) => tracing::warn!("could not read .env: {e}"),
+    }
 
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());

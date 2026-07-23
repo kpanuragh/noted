@@ -13,6 +13,11 @@ name = "noted-server"
 path = "src/main.rs"
 
 [dependencies]
+# Loads `.env` at startup. Without it a `.env` file is read by `docker compose`
+# (for ${VAR} substitution) but silently ignored by `cargo run`, so the same
+# file would configure one path and not the other — the kind of difference
+# people debug for an hour.
+dotenvy = "0.15"
 serde_json.workspace = true
 sha2 = "0.10"
 chrono.workspace = true
