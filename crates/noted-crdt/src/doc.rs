@@ -121,6 +121,33 @@ impl NotedDoc {
         self.doc.transact().encode_diff_v1(&before)
     }
 
+    /// Append a paragraph whose text carries INLINE FORMATTING MARKS, the way
+    /// a real ProseMirror document does when someone bolds a word or pastes a
+    /// link. Test-only: exists because the plain-text projection's one
+    /// historical bug was invisible to any fixture built from unformatted text.
+    ///
+    /// `runs` is (text, attributes) — an empty attribute list means unformatted.
+    pub fn append_formatted_paragraph_for_test(&self, runs: &[(&str, &[(&str, &str)])]) {
+        let frag = self.fragment();
+        let mut txn = self.doc.transact_mut();
+        let len = frag.len(&txn);
+        let node = frag.insert(&mut txn, len, XmlElementPrelim::empty("paragraph"));
+        let text = node.insert(&mut txn, 0, XmlTextPrelim::new(""));
+        let mut at = 0u32;
+        for (chunk, attrs) in runs {
+            if attrs.is_empty() {
+                text.insert(&mut txn, at, chunk);
+            } else {
+                let a: yrs::types::Attrs = attrs
+                    .iter()
+                    .map(|(k, v)| ((*k).into(), (*v).into()))
+                    .collect();
+                text.insert_with_attributes(&mut txn, at, chunk, a);
+            }
+            at += chunk.chars().count() as u32;
+        }
+    }
+
     /// Newline-joined text of each top-level node. Test-only mirror of the
     /// projection logic in Task 11.
     pub fn text_for_test(&self) -> String {
@@ -162,7 +189,31 @@ pub(crate) fn plain_text<T: ReadTxn>(
         return String::new();
     }
     match node {
-        XmlOut::Text(t) => t.get_string(txn),
+        // NOT `get_string`. On an `XmlText`, `get_string` serializes the
+        // INLINE FORMATTING as XML tags — a bold run comes back as
+        // `<bold>Dinosaurs</bold>`, a link as
+        // `<link href="..." class="null" title="...">reptiles</link>`. That
+        // markup then flowed into `blocks.text`, and from there into the
+        // full-text index, the chunks that get embedded, and the text handed to
+        // the extraction model: search matched on `href`, embeddings encoded
+        // Wikipedia URLs, and snippets rendered raw tags to the user.
+        //
+        // The doc comment above already said `get_string` returns "the XML
+        // serialization (with tags), which is not what callers want" — and the
+        // Element and Fragment arms below correctly avoid it. The Text arm did
+        // not, and inline marks are exactly where the tags come from.
+        //
+        // `diff` returns the runs with their text and attributes SEPARATE, so
+        // the attributes can be dropped. Non-string inserts (embeds: images,
+        // and similar) carry no text and contribute nothing.
+        XmlOut::Text(t) => t
+            .diff(txn, yrs::types::text::YChange::identity)
+            .into_iter()
+            .filter_map(|d| match d.insert {
+                yrs::Out::Any(yrs::Any::String(s)) => Some(s.to_string()),
+                _ => None,
+            })
+            .collect::<String>(),
         XmlOut::Element(e) => e
             .children(txn)
             .map(|child| plain_text(&child, txn, depth + 1))
