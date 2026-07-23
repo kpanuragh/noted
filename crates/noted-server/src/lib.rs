@@ -2,6 +2,7 @@ pub mod error;
 pub mod api_auth;
 pub mod auth;
 pub mod membership;
+pub mod providers;
 pub mod routes;
 pub mod state;
 

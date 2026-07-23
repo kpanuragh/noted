@@ -113,13 +113,14 @@ impl AppState {
             answerer: Arc::new(StubAnswerer::new()),
             summariser: Arc::new(StubSummariser::new()),
             cookies_secure: std::env::var("NOTED_INSECURE_COOKIES").as_deref() != Ok("1"),
-            extract_model: match std::env::var("NOTED_EXTRACT").ok().as_deref() {
-                Some("stub") => {
-                    use noted_index::extract::ExtractionProvider;
-                    Some(noted_index::extract::StubExtractor::new().model_id().to_string())
-                }
-                _ => None,
-            },
+            // `None` here, and set by `main` from the extractor INSTANCE it
+            // built. This used to re-read NOTED_EXTRACT itself, which made the
+            // model id the indexing status reports against a second,
+            // independent parse of the variable the scheduler's extractor came
+            // from. They agreed only by luck: any spec `main` understood and
+            // this did not (every `gemini:`/`ollama:` form, once those existed)
+            // silently reported 0-of-0 while extraction was in fact running.
+            extract_model: None,
         }
     }
 

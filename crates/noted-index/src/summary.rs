@@ -94,6 +94,24 @@ pub fn verify_summary(summary: &str, model: &str) -> Result<(), SummaryError> {
     Ok(())
 }
 
+/// The prompt handed to any summary provider. Model-agnostic, and shared for
+/// the same reason [`crate::answer::build_answer_prompt`] is.
+pub fn build_summary_prompt(facts: &CommunityFacts) -> String {
+    let mut p = String::from(
+        "Summarise what connects the following related items, in two or three \
+         sentences. Describe the theme, not the list.\n\n",
+    );
+    for m in &facts.members {
+        p.push_str(&format!("- {}", m.name));
+        if let Some(d) = &m.description {
+            p.push_str(&format!(": {d}"));
+        }
+        p.push('\n');
+    }
+    p.push_str("\nSummary:");
+    p
+}
+
 #[async_trait::async_trait]
 pub trait SummaryProvider: Send + Sync {
     /// Recorded in `community_summaries.model_id`, and compared against it to

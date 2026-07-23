@@ -38,14 +38,17 @@ Working and tested. **Not production-ready** — read the caveats.
 
 ### Caveats worth reading before you deploy this
 
-- **Nothing here has ever talked to a real language model.** Providers for all three
-  inference roles exist and their timeouts and prompt construction are tested, but the tests
-  that would verify a real model's output parses are `#[ignore]`d because this environment has
-  none. Run them with `NOTED_OLLAMA_URL=... cargo test -p noted-index --features extract-ollama
-  --test ollama_live -- --ignored` before trusting the graph or the answers.
-- **Answer synthesis is a stub by default.** Retrieval — which passages, which entities,
-  which themes, in what order — is real and fully tested. The prose that wraps it comes from
-  a deterministic stub unless you configure a real model. Answer *quality* is unmeasured.
+- **The Gemini providers have talked to a real model; the Ollama ones have not.** Gemini
+  extraction and answer synthesis were run against the live API and their output parses into
+  this pipeline's types (`tests/gemini_live.rs`, `--ignored`). The Ollama providers are still
+  wiring that type-checks: their timeouts and prompt construction are tested, but the tests
+  that would verify a real model's output are `#[ignore]`d because this environment has no
+  local model. Run them with `NOTED_OLLAMA_URL=... cargo test -p noted-index --features
+  extract-ollama --test ollama_live -- --ignored` before trusting a local-model deployment.
+- **Answer synthesis is a stub by DEFAULT, though a real one is now one env var away.**
+  Retrieval — which passages, which entities, which themes, in what order — is real and fully
+  tested. The prose that wraps it comes from a deterministic stub unless you set
+  `NOTED_ANSWER`. Answer *quality* is still unmeasured: one live run is not an evaluation.
 - **Entity extraction defaults to a stub too.** The graph pipeline is proven end to end, but
   a graph built by `StubExtractor` is structurally uniform and not meaningful. Point it at a
   real model to get a real graph.
@@ -177,13 +180,43 @@ WS   /sync/{page_id}
 
 ## Configuring a real model
 
-The stubs exist so the pipeline is testable without inference. Real providers sit behind
-feature flags — see `crates/noted-index/src/extract_providers.rs` for the Ollama extractor
-and its `NOTED_EXTRACT` gating.
+Three roles, configured independently, because they have genuinely different shapes.
+Extraction runs once per chunk across the whole corpus — throughput-bound and mechanical.
+Answering runs once per question with a human waiting — latency-bound, and the one role
+where reasoning is the product. You can reasonably want a local model grinding through
+extraction and a hosted one answering questions.
 
-If you write a provider, **give the HTTP client an explicit request and connect timeout.**
-`reqwest` sets neither by default, so a hung model stalls the worker forever and no
-consecutive-failure cap ever trips, because no batch ever returns.
+```sh
+NOTED_EXTRACT=gemini:gemini-3.5-flash-lite   # stub | ollama:<model> | gemini:<model>
+NOTED_ANSWER=gemini:gemini-3.5-flash
+NOTED_SUMMARY=gemini:gemini-3.5-flash
+GEMINI_API_KEY=...                           # required by any gemini: spec
+NOTED_OLLAMA_URL=http://localhost:11434      # default
+```
+
+A malformed spec is **fatal at startup** rather than falling back to a stub. An operator who
+asked for a real model and mistyped the key has said clearly what they want; quietly serving
+stub prose would look like a working deployment while producing answers nobody could tell
+were fake.
+
+**For extraction, prefer a non-reasoning model.** Reading names out of a sentence is
+mechanical, and thinking tokens bill as output. Measured on one trivial extraction:
+`gemini-3.6-flash` spent 1010 thinking tokens, `gemini-3.5-flash-lite` spent 0, and the two
+answers were equivalent. On a corpus-wide job that difference is the whole bill. The Gemini
+extractor sends `thinkingLevel: "low"` for this reason.
+
+If you write a provider:
+
+- **Give the HTTP client an explicit request and connect timeout.** `reqwest` sets neither by
+  default, so a hung model stalls the worker forever and no consecutive-failure cap ever
+  trips, because no batch ever returns.
+- **Check the provider's own completion signal, not just the HTTP status.** Gemini returns
+  `200 OK` with the output *present but truncated* and `finishReason: MAX_TOKENS`. Under a
+  response schema that is syntactically invalid JSON; for prose it is half an answer wearing
+  a complete one's clothes.
+- **Do not put the API key in the URL.** URLs reach access logs, proxy logs and `reqwest`'s
+  own error `Display`. `x-goog-api-key` as a header keeps it out of all three — and write
+  `Debug` by hand, because the derived one prints the key.
 
 ---
 

@@ -28,7 +28,7 @@ noted-crdt = { path = "../noted-crdt" }
 # feature flag itself stays: `noted-index` remains slim by default so a
 # search-free deployment (or the `noted-index` worker's own dev-deps) can opt
 # out.
-noted-index = { path = "../noted-index", features = ["embed"] }
+noted-index = { path = "../noted-index", features = ["embed", "gemini", "extract-ollama"] }
 axum = { version = "0.8", features = ["ws"] }
 tokio.workspace = true
 sqlx.workspace = true

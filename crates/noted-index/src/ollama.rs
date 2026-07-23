@@ -122,28 +122,11 @@ impl OllamaAnswerer {
     /// The prompt, built from retrieval rows.
     ///
     /// Public so a test can assert its shape WITHOUT a model — the part of this
-    /// provider that can be verified here is exactly this.
+    /// provider that can be verified here is exactly this. Delegates to
+    /// [`crate::answer::build_answer_prompt`]: the prompt is model-agnostic and
+    /// is shared with the Gemini providers, so it has one definition.
     pub fn build_prompt(req: &AnswerRequest) -> String {
-        let mut p = String::new();
-        p.push_str(
-            "Answer the question using ONLY the passages below. \
-             If they do not contain the answer, say so plainly rather than guessing. \
-             Do not invent sources.\n\n",
-        );
-        if !req.subjects.is_empty() {
-            p.push_str(&format!("The question is about: {}\n\n", req.subjects.join(", ")));
-        }
-        for (i, item) in req.context.iter().enumerate() {
-            p.push_str(&format!(
-                "[{}] from \"{}\" ({}):\n{}\n\n",
-                i + 1,
-                item.source,
-                item.note,
-                item.text
-            ));
-        }
-        p.push_str(&format!("Question: {}\nAnswer:", req.question));
-        p
+        crate::answer::build_answer_prompt(req)
     }
 }
 
@@ -195,19 +178,7 @@ impl OllamaSummariser {
     }
 
     pub fn build_prompt(facts: &CommunityFacts) -> String {
-        let mut p = String::from(
-            "Summarise what connects the following related items, in two or three \
-             sentences. Describe the theme, not the list.\n\n",
-        );
-        for m in &facts.members {
-            p.push_str(&format!("- {}", m.name));
-            if let Some(d) = &m.description {
-                p.push_str(&format!(": {d}"));
-            }
-            p.push('\n');
-        }
-        p.push_str("\nSummary:");
-        p
+        crate::summary::build_summary_prompt(facts)
     }
 }
 

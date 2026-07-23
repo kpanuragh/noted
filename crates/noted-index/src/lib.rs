@@ -88,6 +88,14 @@ pub mod extract_providers;
 #[cfg(feature = "extract-ollama")]
 pub mod ollama;
 
+// Gemini-backed providers for all three roles. Unlike `ollama`, the request and
+// response shapes here were checked against the live API before the code was
+// written — three of them did not match what the docs-from-memory produced, and
+// the module header records which. Still: no test in this repository calls the
+// live API.
+#[cfg(feature = "gemini")]
+pub mod gemini;
+
 // Embedding drags in fastembed -> ONNX runtime + a HuggingFace model downloader.
 // `noted-server` DOES use this now — it embeds search queries for hybrid search
 // (see noted-server's routes/search.rs) — but not every consumer of this crate

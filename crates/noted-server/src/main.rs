@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use noted_index::extract::ExtractionProvider;
 use noted_index::provider::FastEmbed;
 use noted_server::{AppState, app};
 
@@ -27,27 +28,19 @@ async fn main() -> anyhow::Result<()> {
     // a product whose pitch is "ask your notes", is the difference between
     // working and not.
     //
-    // Extraction stays opt-in via NOTED_EXTRACT, exactly as the CLI gates it:
-    // there is no LLM in most deployments, and a stub quietly building a
-    // meaningless graph is worse than no graph.
-    let extractor = match std::env::var("NOTED_EXTRACT").ok().as_deref() {
-        Some("stub") => {
-            tracing::warn!(
-                "NOTED_EXTRACT=stub: the background indexer will build the knowledge graph with \
-                 the DETERMINISTIC STUB extractor, not a real model. Fine for exercising the \
-                 pipeline; the resulting graph is not meaningful."
-            );
-            Some(Arc::new(noted_index::extract::StubExtractor::new())
-                as Arc<dyn noted_index::extract::ExtractionProvider>)
-        }
-        _ => {
-            tracing::info!(
-                "no extraction provider configured (set NOTED_EXTRACT=stub for local testing); \
-                 the background indexer will embed but not extract"
-            );
-            None
-        }
-    };
+    // All three model roles resolved from configuration, and a bad spec is
+    // FATAL rather than a silent fall back to a stub — see providers.rs.
+    let extractor = noted_server::providers::extractor().map_err(anyhow::Error::msg)?;
+    let answerer = noted_server::providers::answerer().map_err(anyhow::Error::msg)?;
+    let summariser = noted_server::providers::summariser().map_err(anyhow::Error::msg)?;
+
+    // Taken from the extractor INSTANCE rather than re-derived from the
+    // environment. `AppState` previously parsed NOTED_EXTRACT a second time to
+    // fill `extract_model`, which meant the id the indexing status reported
+    // against and the model actually doing the extracting were two independent
+    // reads of the same variable — they agreed only by luck, and would diverge
+    // the moment either parse changed.
+    let extract_model = extractor.as_ref().map(|e| e.model_id().to_string());
 
     let scheduler = noted_index::scheduler::Scheduler::start(
         pool.clone(),
@@ -58,7 +51,12 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!("noted-server listening on {bind}");
-    axum::serve(listener, app(AppState::new(pool, embedder))).await?;
+    let mut state = AppState::new(pool, embedder);
+    state.answerer = answerer;
+    state.summariser = summariser;
+    state.extract_model = extract_model;
+
+    axum::serve(listener, app(state)).await?;
 
     // Reached on graceful shutdown: let the current pass finish rather than
     // tearing it out mid-write.
