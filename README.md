@@ -34,10 +34,15 @@ Working and tested. **Not production-ready** — read the caveats.
 | Share links (public, tokenised, revocable) | ✅ |
 | **Comments, public API, templates, plugins** | ❌ not started |
 
-**309 Rust tests, 31 web unit tests, 13 end-to-end tests.**
+**396 Rust tests, 31 web unit tests, 13 end-to-end tests.**
 
 ### Caveats worth reading before you deploy this
 
+- **Nothing here has ever talked to a real language model.** Providers for all three
+  inference roles exist and their timeouts and prompt construction are tested, but the tests
+  that would verify a real model's output parses are `#[ignore]`d because this environment has
+  none. Run them with `NOTED_OLLAMA_URL=... cargo test -p noted-index --features extract-ollama
+  --test ollama_live -- --ignored` before trusting the graph or the answers.
 - **Answer synthesis is a stub by default.** Retrieval — which passages, which entities,
   which themes, in what order — is real and fully tested. The prose that wraps it comes from
   a deterministic stub unless you configure a real model. Answer *quality* is unmeasured.
