@@ -46,20 +46,27 @@ services:
       # of the box and the graph it builds is DETERMINISTIC AND MEANINGLESS.
       # A misconfigured spec is fatal at startup rather than falling back here,
       # because a deployment quietly serving stub prose looks healthy.
-      NOTED_EXTRACT: stub
-      # NOTED_ANSWER: gemini:gemini-3.5-flash
-      # NOTED_SUMMARY: gemini:gemini-3.5-flash
+      # Driven from `.env` (see `.env.example`) so the same file configures both
+      # `docker compose up` and `cargo run` rather than each having its own
+      # answer. The `:-` defaults keep `up` working with no `.env` at all.
       #
       # For extraction prefer a NON-reasoning model: reading names out of a
       # sentence is mechanical, and on a corpus-wide job the thinking tokens
       # bill as output for no gain. Measured on one trivial extraction:
       # gemini-3.6-flash spent 1010 thinking tokens, gemini-3.5-flash-lite
       # spent 0, and the two answers were equivalent.
-      # NOTED_EXTRACT: gemini:gemini-3.5-flash-lite
-      #
-      # GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      # NOTED_OLLAMA_URL: http://host.docker.internal:11434
-      RUST_LOG: info
+      NOTED_EXTRACT: ${NOTED_EXTRACT:-stub}
+      NOTED_ANSWER: ${NOTED_ANSWER:-stub}
+      NOTED_SUMMARY: ${NOTED_SUMMARY:-stub}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # `localhost` inside this container is the container, not your machine.
+      NOTED_OLLAMA_URL: ${NOTED_OLLAMA_URL:-http://host.docker.internal:11434}
+      RUST_LOG: ${RUST_LOG:-info}
+    # `host.docker.internal` is provided automatically on Docker Desktop but NOT
+    # on Linux, where it does not resolve at all unless mapped explicitly. Without
+    # this, NOTED_OLLAMA_URL pointing at the host silently fails to connect.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8787:8787"
     volumes:

@@ -2065,6 +2065,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "dotenvy",
  "futures-util",
  "noted-crdt",
  "noted-db",

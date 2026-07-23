@@ -69,11 +69,24 @@ fn gemini_key() -> Result<String, String> {
     })
 }
 
+/// Reads a role's spec, treating an EMPTY value as unset.
+///
+/// This matters because `docker-compose.yml` now always sets these three
+/// variables (`${NOTED_ANSWER:-stub}` and friends), so a user who writes
+/// `NOTED_EXTRACT=` in their `.env` to mean "off" hands the process an empty
+/// string rather than nothing at all. Without this, that empty string reaches
+/// `parse`, fails, and — because a malformed spec is deliberately fatal — takes
+/// the whole server down at startup. "Blank means unset" is what anyone editing
+/// a `.env` expects.
+fn spec_for(var: &str) -> Option<String> {
+    std::env::var(var).ok().filter(|v| !v.trim().is_empty())
+}
+
 /// Builds the extractor. `Ok(None)` means extraction is switched off — the
 /// indexing status then reports 0-of-0 rather than a backlog that will never
 /// drain.
 pub fn extractor() -> Result<Option<Arc<dyn ExtractionProvider>>, String> {
-    let Ok(spec) = std::env::var("NOTED_EXTRACT") else {
+    let Some(spec) = spec_for("NOTED_EXTRACT") else {
         tracing::info!(
             "no extraction provider configured (NOTED_EXTRACT unset); the background \
              indexer will embed but not extract. Set NOTED_EXTRACT=gemini:<model> to \
@@ -112,7 +125,7 @@ pub fn extractor() -> Result<Option<Arc<dyn ExtractionProvider>>, String> {
 /// default for a deployment with no model, but nobody should discover that from
 /// the answers.
 pub fn answerer() -> Result<Arc<dyn AnswerProvider>, String> {
-    let Ok(spec) = std::env::var("NOTED_ANSWER") else {
+    let Some(spec) = spec_for("NOTED_ANSWER") else {
         tracing::warn!(
             "NOTED_ANSWER unset: the Ask surface will return STUB prose over real \
              retrieval. Set NOTED_ANSWER=gemini:<model> for real answers."
@@ -141,7 +154,7 @@ pub fn answerer() -> Result<Arc<dyn AnswerProvider>, String> {
 
 /// Builds the summariser used by global search.
 pub fn summariser() -> Result<Arc<dyn SummaryProvider>, String> {
-    let Ok(spec) = std::env::var("NOTED_SUMMARY") else {
+    let Some(spec) = spec_for("NOTED_SUMMARY") else {
         return Ok(Arc::new(StubSummariser::new()));
     };
 
@@ -183,6 +196,20 @@ mod tests {
     #[test]
     fn a_model_name_may_contain_colons() {
         assert!(matches!(parse("ollama:llama3.2:3b"), Ok(Spec::Ollama(m)) if m == "llama3.2:3b"));
+    }
+
+    /// An empty value means "unset", not "malformed". `docker-compose.yml`
+    /// always sets these variables, so `NOTED_EXTRACT=` in a `.env` — the
+    /// obvious way to write "off" — would otherwise be a fatal startup error.
+    #[test]
+    fn an_empty_value_reads_as_unset() {
+        // SAFETY: single-threaded test, and the var is removed straight after.
+        unsafe { std::env::set_var("NOTED_TEST_EMPTY_SPEC", "   ") };
+        assert_eq!(spec_for("NOTED_TEST_EMPTY_SPEC"), None);
+        unsafe { std::env::set_var("NOTED_TEST_EMPTY_SPEC", "stub") };
+        assert_eq!(spec_for("NOTED_TEST_EMPTY_SPEC").as_deref(), Some("stub"));
+        unsafe { std::env::remove_var("NOTED_TEST_EMPTY_SPEC") };
+        assert_eq!(spec_for("NOTED_TEST_EMPTY_SPEC"), None);
     }
 
     /// These must fail rather than fall back. A typo that degrades to a stub
