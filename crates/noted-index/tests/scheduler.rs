@@ -306,6 +306,7 @@ async fn the_scheduler_summarises_communities_without_the_cli() {
     .unwrap();
 
     let mut summarised = false;
+    let mut embedded = false;
     for _ in 0..100 {
         let n: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM community_summaries WHERE community_id = $1 AND model_id = $2",
@@ -317,7 +318,17 @@ async fn the_scheduler_summarises_communities_without_the_cli() {
         .unwrap();
         if n == 1 {
             summarised = true;
-            break;
+            let e: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM community_summary_embeddings WHERE community_id = $1",
+            )
+            .bind(community)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            if e == 1 {
+                embedded = true;
+                break;
+            }
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -343,6 +354,17 @@ async fn the_scheduler_summarises_communities_without_the_cli() {
         summarised,
         "the scheduler never summarised the community; global search would have \
          nothing to answer from"
+    );
+    // ...AND that the summary is READABLE, which is not the same claim.
+    //
+    // `summaries_by_similarity` — the path the Ask surface takes whenever it
+    // has a question vector — INNER JOINs `community_summary_embeddings`. A
+    // summary with no embedding is invisible to it, so a workspace can hold
+    // valid, current prose and still be reported as "0 themes read". That was
+    // the observed symptom: 7 summaries written, 0 consulted.
+    assert!(
+        embedded,
+        "the summary was written but never embedded, so global search cannot see it"
     );
     assert!(
         summariser.calls.load(std::sync::atomic::Ordering::SeqCst) > 0,
