@@ -136,10 +136,20 @@ impl Scheduler {
     /// CLI gates it behind `NOTED_EXTRACT`: there is no LLM in most
     /// deployments, and a stub silently building a meaningless graph is worse
     /// than no graph.
+    /// `summariser` is optional for the same reason `extractor` is: not every
+    /// deployment has a model. Absent, community summaries are never written
+    /// and global search reports its themes as unsummarised — which is exactly
+    /// what it did for every deployment before this was wired, because
+    /// `SummaryWorker` was reachable only from the CLI and from global
+    /// search's lazy REFRESH path. Refresh regenerates a summary that has gone
+    /// stale; it has never created a missing one. So a server that had
+    /// clustered its notes into themes could sit there indefinitely with zero
+    /// summaries and nothing to answer "across everything" from.
     pub fn start(
         pool: PgPool,
         embedder: Arc<dyn EmbeddingProvider>,
         extractor: Option<Arc<dyn ExtractionProvider>>,
+        summariser: Option<Arc<dyn crate::summary::SummaryProvider>>,
     ) -> Result<Self, crate::worker::WorkerError> {
         let cancel = Arc::new(tokio::sync::Notify::new());
         let stop = cancel.clone();
@@ -149,6 +159,7 @@ impl Scheduler {
         let sweep_pool = pool.clone();
         let embed_worker = Worker::new(pool.clone(), embedder)?;
         let extract_worker = extractor.map(|e| ExtractWorker::new(pool.clone(), e));
+        let summary_pool = pool.clone();
 
         let handle = tokio::spawn(async move {
             use std::sync::atomic::Ordering;
@@ -160,7 +171,13 @@ impl Scheduler {
                     break;
                 }
 
-                let did_work = run_pass(&embed_worker, extract_worker.as_ref()).await;
+                let did_work = run_pass(
+                    &embed_worker,
+                    extract_worker.as_ref(),
+                    summariser.as_ref(),
+                    &summary_pool,
+                )
+                .await;
 
                 // And after it: a `stop()` that landed DURING the pass must not
                 // cost an interval of sleep. This is the check that was missing
@@ -232,7 +249,19 @@ impl Scheduler {
 /// process, so a transient database blip would silently stop all indexing until
 /// someone restarted the server. The CLI, which a human is watching, still
 /// reports errors loudly — that is the right place for them.
-async fn run_pass(embed: &Worker, extract: Option<&ExtractWorker>) -> bool {
+/// How many workspaces one pass will summarise for.
+///
+/// Bounded so a single tenant with a large backlog cannot starve the others.
+/// The rest stay pending: the queue is a query, so there is no cursor to lose
+/// and the next pass simply sees them again.
+const SUMMARY_WORKSPACES_PER_PASS: i64 = 4;
+
+async fn run_pass(
+    embed: &Worker,
+    extract: Option<&ExtractWorker>,
+    summariser: Option<&Arc<dyn crate::summary::SummaryProvider>>,
+    pool: &sqlx::PgPool,
+) -> bool {
     let mut did_work = false;
 
     match embed.run_once().await {
@@ -269,6 +298,57 @@ async fn run_pass(embed: &Worker, extract: Option<&ExtractWorker>) -> bool {
                 }
             }
             Err(e) => tracing::warn!(error = %e, "extraction pass failed; will retry"),
+        }
+    }
+
+    if let Some(provider) = summariser {
+        let model_id = provider.model_id().to_string();
+        match crate::summary_worker::workspaces_with_pending_summaries(
+            pool,
+            &model_id,
+            SUMMARY_WORKSPACES_PER_PASS,
+        )
+        .await
+        {
+            Ok(workspaces) => {
+                for ws in workspaces {
+                    let worker = crate::summary_worker::SummaryWorker::new(
+                        pool.clone(),
+                        Arc::clone(provider),
+                        ws,
+                    );
+                    match worker.run_once().await {
+                        Ok(pass) => {
+                            // `marked_stale` is deliberately NOT progress: it
+                            // makes no model call and leaves the community
+                            // pending, so counting it would hold the loop at
+                            // the busy interval re-marking the same rows
+                            // forever. Same reasoning as a failed embed batch
+                            // above.
+                            if pass.regenerated > 0 {
+                                did_work = true;
+                                tracing::info!(
+                                    workspace = %ws,
+                                    regenerated = pass.regenerated,
+                                    marked_stale = pass.marked_stale,
+                                    failed = pass.failed,
+                                    "summarised communities"
+                                );
+                            } else if pass.failed > 0 {
+                                tracing::warn!(
+                                    workspace = %ws,
+                                    failed = pass.failed,
+                                    "no community could be summarised; they stay queued"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(workspace = %ws, error = %e, "summary pass failed; will retry")
+                        }
+                    }
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "could not poll for pending summaries"),
         }
     }
 

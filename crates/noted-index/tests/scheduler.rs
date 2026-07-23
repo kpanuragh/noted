@@ -88,6 +88,7 @@ async fn a_new_chunk_is_indexed_without_anyone_running_the_cli() {
         pool.clone(),
         Arc::new(StubEmbedder(model.clone())),
         None,
+        None,
     )
     .unwrap();
 
@@ -126,7 +127,7 @@ async fn stopping_the_scheduler_actually_stops_it() {
     let model = format!("sched-{}", Uuid::new_v4());
 
     let scheduler =
-        Scheduler::start(pool.clone(), Arc::new(StubEmbedder(model.clone())), None).unwrap();
+        Scheduler::start(pool.clone(), Arc::new(StubEmbedder(model.clone())), None, None).unwrap();
     scheduler.stop().await;
 
     // Work arriving AFTER the stop must not be touched.
@@ -201,4 +202,168 @@ fn is_current_and_pending_agree_on_the_boundary() {
     };
     assert!(!behind.is_current());
     assert_eq!(behind.pending(), 3);
+}
+
+/// A deterministic summariser that records how many times it was called, so a
+/// test can tell "the scheduler summarised" from "a summary happened to exist".
+struct CountingSummariser {
+    model_id: String,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl noted_index::summary::SummaryProvider for CountingSummariser {
+    fn model_id(&self) -> &str {
+        &self.model_id
+    }
+    async fn summarise(
+        &self,
+        facts: &noted_index::summary::CommunityFacts,
+    ) -> Result<String, noted_index::summary::SummaryError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(format!("A theme covering {} items.", facts.members.len()))
+    }
+}
+
+/// **A clustered workspace gets its themes summarised with NO human running a
+/// binary** — the same property the embedding test asserts, for the other half
+/// of the pipeline.
+///
+/// MECHANISM PROTECTED: the summary stage of `run_pass`. Without it the
+/// scheduler embeds and extracts but never writes a summary, so `communities`
+/// fills up while `community_summaries` stays empty and "ask across everything"
+/// answers "this workspace has no summarised themes yet" forever. That was the
+/// state of every deployment before this stage existed: `SummaryWorker` was
+/// reachable only from the CLI and from global search's lazy REFRESH, which
+/// regenerates a stale summary and never creates a missing one.
+#[tokio::test]
+async fn the_scheduler_summarises_communities_without_the_cli() {
+    let pool = pool().await;
+    let ws = workspace(&pool).await;
+    let model = format!("sched-sum-{}", Uuid::new_v4());
+
+    // A community with members, exactly as CommunityWorker would leave it —
+    // but backdated, and that is not decoration.
+    //
+    // The scheduler is INSTANCE-WIDE and this database is shared. A fresh
+    // model id makes every community on the instance pending (a model change is
+    // a full regeneration), which here is 1800+ workspaces, and one pass serves
+    // only SUMMARY_WORKSPACES_PER_PASS of them in `created_at` order. A
+    // just-created workspace sorts last and would never be reached, so the test
+    // would fail while the mechanism worked perfectly.
+    //
+    // Backdating puts this workspace at the head of the queue, which is the
+    // test controlling its own position rather than hoping. Asserting an
+    // instance-wide property against a shared database without doing this is
+    // the scar `materialize.rs` already carries.
+    let community: Uuid = sqlx::query_scalar(
+        "INSERT INTO communities (workspace_id, level, member_set_hash, created_at)
+         VALUES ($1, 0, $2, TIMESTAMPTZ '1970-01-01') RETURNING id",
+    )
+    .bind(ws)
+    .bind(format!("hash-{}", Uuid::new_v4()))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    for name in ["alpha", "beta", "gamma"] {
+        let e = noted_db::graph::resolve_entity(
+            &pool,
+            ws,
+            &format!("{name}-{}", Uuid::new_v4()),
+            Some("CONCEPT"),
+            None,
+        )
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO community_members (community_id, entity_id) VALUES ($1, $2)")
+            .bind(community)
+            .bind(e)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    // Premise: no summary yet, or this proves nothing.
+    let before: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM community_summaries WHERE community_id = $1",
+    )
+    .bind(community)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(before, 0, "premise: the community starts unsummarised");
+
+    let summariser = Arc::new(CountingSummariser {
+        model_id: model.clone(),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let scheduler = Scheduler::start(
+        pool.clone(),
+        Arc::new(StubEmbedder(model.clone())),
+        None,
+        Some(summariser.clone()),
+    )
+    .unwrap();
+
+    let mut summarised = false;
+    for _ in 0..100 {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM community_summaries WHERE community_id = $1 AND model_id = $2",
+        )
+        .bind(community)
+        .bind(&model)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        if n == 1 {
+            summarised = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    scheduler.stop().await;
+
+    assert!(
+        summarised,
+        "the scheduler never summarised the community; global search would have \
+         nothing to answer from"
+    );
+    assert!(
+        summariser.calls.load(std::sync::atomic::Ordering::SeqCst) > 0,
+        "a summary row appeared without the summariser being called"
+    );
+}
+
+/// With NO summariser configured the pass must be a no-op rather than writing
+/// placeholder prose. `community_summaries` is persisted and global search
+/// answers from it, so a stub summary is indistinguishable from a real one to
+/// whoever reads the answer.
+#[tokio::test]
+async fn no_summariser_means_no_summaries_are_written() {
+    let pool = pool().await;
+    let ws = workspace(&pool).await;
+    let model = format!("sched-nosum-{}", Uuid::new_v4());
+
+    let community: Uuid = sqlx::query_scalar(
+        "INSERT INTO communities (workspace_id, level, member_set_hash)
+         VALUES ($1, 0, $2) RETURNING id",
+    )
+    .bind(ws)
+    .bind(format!("hash-{}", Uuid::new_v4()))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let scheduler =
+        Scheduler::start(pool.clone(), Arc::new(StubEmbedder(model.clone())), None, None).unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    scheduler.stop().await;
+
+    let n: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM community_summaries WHERE community_id = $1")
+            .bind(community)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 0, "a summary was written with no summariser configured");
 }
