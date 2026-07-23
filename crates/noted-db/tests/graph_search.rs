@@ -290,19 +290,28 @@ async fn local_search_finds_a_page_that_hybrid_search_ranks_out() {
     let hybrid_all = noted_db::search::hybrid(&pool, ws, acl_user(&pool).await, question, &q_vec, &model, 50)
         .await
         .unwrap();
-    let beta_pos = hybrid_all
-        .iter()
-        .position(|h| h.page_id == beta)
-        .expect("fixture broken: BETA must be live, embedded and visible to hybrid at all");
+    // BETA is orthogonal to the query vector (axis 500 against the query's 700),
+    // so its cosine distance is 1.0 — well beyond `search::MAX_COSINE_DISTANCE`.
+    // Hybrid therefore does not return it AT ALL, at any k.
+    //
+    // This premise USED to read "hybrid returns BETA but ranks it below the
+    // decoys". That was only ever true because the vector arm had no distance
+    // cutoff and so returned every embedded page in the workspace, however
+    // irrelevant — the very bug the cutoff fixes. The premise is now strictly
+    // stronger: there is no k that rescues BETA, because it is never a
+    // candidate. Only the graph can reach it.
+    assert!(
+        !hybrid_all.iter().any(|h| h.page_id == beta),
+        "PREMISE: hybrid must not return the graph-only page at ANY k — \
+         if it does, this test proves nothing about the graph"
+    );
+    // The decoys, sitting exactly ON the query vector, must still come back —
+    // otherwise the cutoff is simply rejecting everything and the assertion
+    // above would pass for the wrong reason.
     for d in &decoys {
-        let d_pos = hybrid_all
-            .iter()
-            .position(|h| h.page_id == *d)
-            .expect("fixture broken: decoys must be visible to hybrid");
         assert!(
-            d_pos < beta_pos,
-            "PREMISE: hybrid must rank the graph-only page BELOW irrelevant decoys — \
-             otherwise some ordinary k would have found it and the graph adds nothing"
+            hybrid_all.iter().any(|h| h.page_id == *d),
+            "fixture broken: decoys sit on the query vector and must be visible"
         );
     }
 

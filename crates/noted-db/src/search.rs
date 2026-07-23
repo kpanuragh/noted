@@ -286,6 +286,39 @@ const RRF_K: f32 = 60.0;
 /// with `hnsw.iterative_scan = relaxed_order`. Adding a separate join around the
 /// ANN scan is exactly how this repo produced three "looks-indexed-but-isn't"
 /// bugs, so the filter goes where the existing one is known to work.
+/// The furthest a chunk may be from the query and still count as a vector hit.
+///
+/// WITHOUT THIS the vector arm is a pure k-nearest-neighbours query: it returns
+/// the closest N rows no matter how far away they are, so it ALWAYS returns
+/// something. In a workspace with two pages, every query — including one whose
+/// words appear nowhere — came back with both pages, because both are trivially
+/// inside the top 100. "Nearest" is not "relevant", and a search that cannot
+/// return nothing cannot be trusted when it returns something.
+///
+/// Measured with `noted-index`'s `distance_calibration` test against a real
+/// workspace (bge-base-en-v1.5, pgvector cosine distance, so the range is
+/// [0, 2]):
+///
+/// ```text
+/// query                            closest chunk
+/// Kerala beaches                        0.238   <- relevant
+/// dinosaurs                             0.271   <- relevant
+/// asdfghjkl qwerty                      0.518   <- nonsense
+/// Data                                  0.548   <- the reported bug
+/// banking regulation compliance         0.578   <- plausible but unrelated
+/// ```
+///
+/// 0.45 sits in the empty gap: 0.18 clear of the furthest relevant hit and 0.07
+/// clear of the nearest irrelevant one.
+///
+/// Two caveats worth keeping honest. This is calibrated on ONE small workspace,
+/// so the gap is measured rather than proven general. And the same numbers
+/// taken across an entire shared database instead of one workspace do NOT
+/// separate at all — nonsense scored 0.299 there against 0.271 for a genuine
+/// query — because a corpus-wide population is not the one a user searches.
+/// Re-run the calibration before changing this number.
+pub const MAX_COSINE_DISTANCE: f64 = 0.45;
+
 pub async fn hybrid(
     pool: &PgPool,
     workspace_id: Uuid,
@@ -330,6 +363,9 @@ pub async fn hybrid(
                     (e.embedding <=> $3) AS distance
              FROM embeddings e
              WHERE e.model_id = $4
+               -- The cutoff. See MAX_COSINE_DISTANCE: without it this arm can
+               -- never return empty, so every query matches every document.
+               AND (e.embedding <=> $3) < $8
                AND EXISTS (
                    SELECT 1
                    FROM page_chunks pc
@@ -361,9 +397,9 @@ pub async fn hybrid(
              FROM vec_pages
          ),
          fused AS (
-             SELECT page_id, snippet, rank FROM lex
+             SELECT page_id, snippet, rank, TRUE  AS is_lex FROM lex
              UNION ALL
-             SELECT page_id, snippet, rank FROM vec
+             SELECT page_id, snippet, rank, FALSE AS is_lex FROM vec
          )
          SELECT f.page_id, p.title,
                 (array_agg(f.snippet ORDER BY f.rank))[1] AS snippet,
@@ -371,7 +407,17 @@ pub async fn hybrid(
          FROM fused f
          JOIN pages p ON p.id = f.page_id
          GROUP BY f.page_id, p.title
-         ORDER BY score DESC
+         -- Ties are COMMON, not exotic: RRF scores depend only on rank, so a
+         -- page at lexical rank 1 scores exactly what a different page at
+         -- vector rank 1 scores. Ordering by score alone left those ties to
+         -- Postgres, which is free to return them in any order — a search that
+         -- reorders its own results between identical queries.
+         --
+         -- Broken toward the lexical arm, deliberately. If someone types a rare
+         -- exact term, the page containing that literal string is what they
+         -- asked for; a semantic neighbour that merely embeds nearby is a guess.
+         -- page_id last so the order is TOTAL and therefore reproducible.
+         ORDER BY score DESC, bool_or(f.is_lex) DESC, f.page_id
          LIMIT $6"
     ))
     .bind(workspace_id)
@@ -381,6 +427,7 @@ pub async fn hybrid(
     .bind(RRF_K)
     .bind(limit)
     .bind(user_id)
+    .bind(MAX_COSINE_DISTANCE)
     .fetch_all(&mut *tx)
     .await?;
 
