@@ -69,3 +69,60 @@ async fn measure_distances_for_related_and_unrelated_queries() {
     }
     println!();
 }
+
+
+/// Embed one workspace's community summaries NOW, regardless of its place in
+/// the instance-wide queue.
+///
+/// Operator escape hatch, same reason as `summarise_one_workspace_now`: the
+/// scheduler's stages are serial, so a slow extractor delays summary embedding
+/// behind it, and a shared database puts other tenants ahead in the queue.
+/// Embedding is local and cheap — this takes seconds.
+///
+/// ```text
+/// EMBED_SUMMARIES_WORKSPACE=<uuid> cargo test -p noted-index --features embed \
+///   --test distance_calibration embed_summaries_for_one_workspace -- --ignored --nocapture
+/// ```
+#[tokio::test]
+#[ignore = "operator tool: embeds a named workspace's summaries"]
+async fn embed_summaries_for_one_workspace() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
+    let pool = noted_db::connect(&url).await.unwrap();
+    let ws: uuid::Uuid = std::env::var("EMBED_SUMMARIES_WORKSPACE")
+        .expect("set EMBED_SUMMARIES_WORKSPACE=<uuid>")
+        .parse()
+        .unwrap();
+    let summariser_model = std::env::var("SUMMARISER_MODEL")
+        .unwrap_or_else(|_| "ollama:llama3.2:1b".into());
+
+    let embedder = FastEmbed::new().unwrap();
+    let rows = noted_db::community::summaries_needing_embedding(
+        &pool,
+        ws,
+        embedder.model_id(),
+        &summariser_model,
+        200,
+    )
+    .await
+    .unwrap();
+    println!("summaries needing embedding: {}", rows.len());
+    if rows.is_empty() {
+        return;
+    }
+
+    let texts: Vec<String> = rows.iter().map(|(_, t)| t.clone()).collect();
+    let vectors = embedder.embed(&texts).await.unwrap();
+    for ((community_id, text), vector) in rows.iter().zip(vectors) {
+        noted_db::community::store_summary_embedding_for_text(
+            &pool,
+            *community_id,
+            embedder.model_id(),
+            text,
+            &vector,
+        )
+        .await
+        .unwrap();
+    }
+    println!("embedded {} summaries for {ws}", rows.len());
+}
