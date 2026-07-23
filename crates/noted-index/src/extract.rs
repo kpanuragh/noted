@@ -43,6 +43,51 @@ pub trait ExtractionProvider: Send + Sync {
     async fn extract(&self, text: &str) -> Result<Extraction, ExtractError>;
 }
 
+/// Drops the parts of an extraction that cannot be written to a graph, and
+/// trims the rest.
+///
+/// Every provider must run its output through this — it is not a nicety.
+/// `normalise_entity` lowercases and collapses whitespace, so an entity with a
+/// BLANK name normalises to `""`, and `resolve_entity` keys on that. Within a
+/// workspace every blank-named entity from every chunk therefore collapses onto
+/// a SINGLE node, which then accumulates an edge from every chunk that produced
+/// one — a false hub joining unrelated things, and the sort of structure
+/// Louvain will happily build a community around.
+///
+/// This is not defensive programming against a hypothetical. `llama3.2:1b`
+/// does it readily: asked to extract from a meeting note it returned entities
+/// with an empty `name` and the note's topic in `entity_type`, having simply
+/// swapped the fields. The Gemini provider filtered these from the start; the
+/// Ollama provider did not, because until now nothing had ever run it against
+/// a real model.
+pub fn sanitise(extraction: Extraction) -> Extraction {
+    Extraction {
+        entities: extraction
+            .entities
+            .into_iter()
+            .filter(|e| !e.name.trim().is_empty())
+            .map(|e| ExtractedEntity {
+                name: e.name.trim().to_string(),
+                entity_type: e.entity_type.trim().to_string(),
+                // A whitespace-only description is not a description, and
+                // storing one costs a row that reads as "described" downstream.
+                description: e.description.filter(|d| !d.trim().is_empty()),
+            })
+            .collect(),
+        edges: extraction
+            .edges
+            .into_iter()
+            .filter(|e| !e.source.trim().is_empty() && !e.target.trim().is_empty())
+            .map(|e| ExtractedEdge {
+                source: e.source.trim().to_string(),
+                target: e.target.trim().to_string(),
+                relation: e.relation.trim().to_string(),
+                weight: e.weight,
+            })
+            .collect(),
+    }
+}
+
 /// Canonical form used as the per-workspace resolution key.
 pub fn normalise_entity(name: &str) -> String {
     name.split_whitespace()
