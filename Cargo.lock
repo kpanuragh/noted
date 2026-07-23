@@ -2033,6 +2033,7 @@ dependencies = [
  "fastembed",
  "noted-db",
  "noted-index",
+ "pgvector",
  "reqwest",
  "serde",
  "serde_json",
