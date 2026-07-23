@@ -53,6 +53,8 @@ path = "src/bin/noted-index.rs"
 required-features = ["embed"]
 
 [dev-dependencies]
+# Calibration test only: measures real cosine distances to pick a cutoff.
+pgvector = { version = "0.4.2", features = ["sqlx"] }
 uuid.workspace = true
 async-trait = "0.1"
 # Self dev-dependency so this crate's own integration tests (which exercise the

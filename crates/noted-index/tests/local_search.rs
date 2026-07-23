@@ -95,6 +95,37 @@ async fn embedded_page(
     (id, hash)
 }
 
+/// A page whose embedding is a WEAKER but genuine match: mostly on `axis`, with
+/// a component on `off_axis`, giving a cosine distance strictly between 0 and
+/// `search::MAX_COSINE_DISTANCE`.
+///
+/// One-hot vectors on different axes are ORTHOGONAL — cosine distance 1.0, the
+/// maximum. That used to be a convenient way to say "ranks lower", because the
+/// vector arm returned everything regardless of distance. Now that a cutoff
+/// exists, an orthogonal vector means "not a match at all", so a fixture that
+/// needs second place has to be genuinely near the query.
+async fn near_page(
+    pool: &noted_db::PgPool,
+    ws: Uuid,
+    title: &str,
+    text: &str,
+    axis: usize,
+    off_axis: usize,
+    off_weight: f32,
+    model: &str,
+) -> (Uuid, String) {
+    let (id, hash) = page(pool, ws, title, text).await;
+    let mut v = vec![0.0f32; 768];
+    v[axis] = 1.0;
+    v[off_axis] = off_weight;
+    let norm = (1.0 + off_weight * off_weight).sqrt();
+    for x in v.iter_mut() {
+        *x /= norm;
+    }
+    noted_db::chunks::store_embedding(pool, &hash, model, &v).await.unwrap();
+    (id, hash)
+}
+
 fn vec_at(axis: usize) -> Vec<f32> {
     let mut v = vec![0.0f32; 768];
     v[axis] = 1.0;
@@ -376,12 +407,19 @@ async fn citation_order_follows_hybrid_rank() {
         &model,
     )
     .await;
-    let (second, _) = embedded_page(
+    // Deliberately a WEAKER match rather than an unrelated one: mostly on the
+    // query's axis with a component off it, so its cosine distance is ~0.106 —
+    // comfortably inside `search::MAX_COSINE_DISTANCE` but strictly worse than
+    // FIRST's 0. An orthogonal one-hot (the old fixture) is distance 1.0, which
+    // the cutoff now correctly rejects outright, leaving nothing to rank second.
+    let (second, _) = near_page(
         &pool,
         ws,
         "Kitchen",
         "replace the tap washer before the weekend",
+        300,
         301,
+        0.5,
         &model,
     )
     .await;

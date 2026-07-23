@@ -270,3 +270,64 @@ async fn an_empty_query_returns_nothing() {
     let hits = search::hybrid(&pool, ws, acl_user(&pool).await, "  ", &vec_at(0), &model, 10).await.unwrap();
     assert!(hits.is_empty(), "a blank query must not dump the workspace");
 }
+
+/// The reported bug: every query returned every document.
+///
+/// The vector arm was a pure k-nearest-neighbours query — closest N rows, no
+/// matter how far away — so it could never return empty. In a workspace with a
+/// couple of pages, both are trivially inside the top 100, so searching for a
+/// word that appears nowhere still returned everything. A search that cannot
+/// return nothing cannot be trusted when it returns something.
+///
+/// MECHANISM PROTECTED: the `AND (e.embedding <=> $3) < $8` in `near`. Delete
+/// it and this test returns the decoys.
+#[tokio::test]
+async fn a_query_matching_nothing_returns_nothing() {
+    let (pool, ws) = setup().await;
+    let model = unique_model();
+
+    // Pages whose embeddings are ORTHOGONAL to the query vector — cosine
+    // distance 1.0, i.e. maximally unrelated — and whose text shares no term
+    // with the query, so the lexical arm cannot rescue them either.
+    for i in 0..3 {
+        page_with(
+            &pool, ws,
+            &format!("Unrelated{i}"),
+            &format!("sourdough starter needs feeding twice daily {i}"),
+            500, &model,
+        ).await;
+    }
+
+    let hits = search::hybrid(
+        &pool, ws, acl_user(&pool).await,
+        "ECONNREFUSED", &vec_at(700), &model, 10,
+    ).await.unwrap();
+
+    assert!(
+        hits.is_empty(),
+        "a query that matches nothing lexically and nothing semantically must \
+         return nothing; got {} hit(s): {:?}",
+        hits.len(),
+        hits.iter().map(|h| &h.title).collect::<Vec<_>>()
+    );
+}
+
+/// The other half, and the reason the cutoff cannot simply be "reject
+/// everything": a genuinely close chunk must still come back.
+#[tokio::test]
+async fn a_close_enough_chunk_is_still_returned() {
+    let (pool, ws) = setup().await;
+    let model = unique_model();
+    let target = page_with(&pool, ws, "Match", "notes about a topic", 700, &model).await;
+
+    let hits = search::hybrid(
+        &pool, ws, acl_user(&pool).await,
+        "something with no shared words", &vec_at(700), &model, 10,
+    ).await.unwrap();
+
+    assert!(
+        hits.iter().any(|h| h.page_id == target),
+        "a chunk sitting exactly on the query vector (distance 0) must survive \
+         the cutoff — semantic search is the whole point of the vector arm"
+    );
+}
