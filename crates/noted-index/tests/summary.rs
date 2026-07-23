@@ -1223,3 +1223,87 @@ async fn summarising_one_workspace_cannot_touch_another() {
         "B's summary rows — model, prose, state and hash — must be byte-identical after A ran"
     );
 }
+
+/// A community with NO members must never be queued for summarisation.
+///
+/// It has nothing to describe, so summarising it pays a full model call to turn
+/// an empty list into prose — real money on a hosted model, and ~130 seconds
+/// each measured on a local one. They arise legitimately: reaping entities off
+/// archived pages can empty a community without removing it. On the database
+/// this was found against, 4526 of 5684 communities were memberless — 80% of
+/// the queue was work that could not produce a usable summary, sitting in front
+/// of work that could.
+///
+/// MECHANISM PROTECTED: the `EXISTS (SELECT 1 FROM community_members ...)`
+/// clause in both queue queries. Remove either and this test fails.
+#[tokio::test]
+async fn a_memberless_community_is_never_queued_for_summary() {
+    let pool = connect().await;
+    let ws: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO workspaces (name) VALUES ('empty-comm') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let model = format!("sum-empty-{}", uuid::Uuid::new_v4());
+
+    // Two communities in one workspace: one empty, one populated. Both, so the
+    // test distinguishes "skips the empty one" from "skips the workspace".
+    let empty: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO communities (workspace_id, level, member_set_hash)
+         VALUES ($1, 0, $2) RETURNING id",
+    )
+    .bind(ws)
+    .bind(format!("h-{}", uuid::Uuid::new_v4()))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let populated: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO communities (workspace_id, level, member_set_hash)
+         VALUES ($1, 0, $2) RETURNING id",
+    )
+    .bind(ws)
+    .bind(format!("h-{}", uuid::Uuid::new_v4()))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let entity = noted_db::graph::resolve_entity(
+        &pool,
+        ws,
+        &format!("member-{}", uuid::Uuid::new_v4()),
+        Some("CONCEPT"),
+        None,
+    )
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO community_members (community_id, entity_id) VALUES ($1, $2)")
+        .bind(populated)
+        .bind(entity)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let pending = noted_index::summary_worker::pending_summaries(&pool, ws, &model)
+        .await
+        .unwrap();
+    let ids: Vec<uuid::Uuid> = pending.iter().map(|p| p.community_id).collect();
+
+    assert!(
+        ids.contains(&populated),
+        "the community WITH members must still be queued — otherwise this passes \
+         by queueing nothing at all"
+    );
+    assert!(
+        !ids.contains(&empty),
+        "a memberless community was queued; it would cost a full model call to \
+         summarise an empty list"
+    );
+
+    // Clean up: this database is shared with the running application, and a
+    // pending community here is a pending community for the real scheduler.
+    sqlx::query("DELETE FROM communities WHERE workspace_id = $1")
+        .bind(ws)
+        .execute(&pool)
+        .await
+        .unwrap();
+}
