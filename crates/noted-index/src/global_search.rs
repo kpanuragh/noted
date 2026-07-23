@@ -6,7 +6,7 @@
 //! over community summaries and reducing the partials into one answer.
 //!
 //! ```text
-//! question -> community::summaries_for_search   [size-ranked, model-filtered]
+//! question -> community::summaries_by_similarity  [semantic; size-ranked fallback]
 //!          -> map:    one AnswerProvider call per community -> (partial, relevance)
 //!          -> reduce: one call over the partials, ordered by relevance
 //!          -> GlobalAnswer { answer, partials, skipped_unsummarised }
@@ -99,13 +99,13 @@ pub struct GlobalAnswer {
 /// `local_search` does: a model handed a question and no material will answer
 /// from its weights, and a fluent answer with an empty `partials` list is
 /// indistinguishable from a well-sourced one.
-#[allow(clippy::too_many_arguments)]
-/// `question_vec` selects themes SEMANTICALLY when supplied (M6-3).
 ///
-/// `None` falls back to size-ranking, which is what this did before summary
-/// embeddings existed. The fallback is kept rather than removed because a
-/// workspace whose summaries have not been embedded yet must still answer —
-/// degraded and honest beats unavailable.
+/// # Theme selection is SEMANTIC when a question vector is supplied (M6-3)
+///
+/// `question_vec` of `None` falls back to size-ranking, which is what this did
+/// before summary embeddings existed. The fallback is kept rather than removed
+/// because a workspace whose summaries have not been embedded yet must still
+/// answer — degraded and honest beats unavailable.
 #[allow(clippy::too_many_arguments)]
 pub async fn global_search(
     pool: &PgPool,
