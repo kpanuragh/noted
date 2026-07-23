@@ -109,6 +109,39 @@ pub fn verify_answer(answer: &str, model: &str) -> Result<(), AnswerError> {
     Ok(())
 }
 
+/// The prompt handed to any answer provider, built from retrieval rows.
+///
+/// Lives here rather than on a provider because it is model-agnostic: it
+/// describes the retrieval contract (passages, their provenance note, the
+/// subjects local search seeded from), not any one backend's wire format. Two
+/// copies would drift, and a drifted prompt is invisible — both providers keep
+/// returning plausible prose while one of them silently stops being told which
+/// passages were graph hops.
+pub fn build_answer_prompt(req: &AnswerRequest) -> String {
+    let mut p = String::new();
+    p.push_str(
+        "Answer the question using ONLY the passages below. \
+         If they do not contain the answer, say so plainly rather than guessing. \
+         Do not invent sources. \
+         Reply in complete sentences that would make sense to someone who has \
+         not seen the passages — not a bare name or fragment.\n\n",
+    );
+    if !req.subjects.is_empty() {
+        p.push_str(&format!("The question is about: {}\n\n", req.subjects.join(", ")));
+    }
+    for (i, item) in req.context.iter().enumerate() {
+        p.push_str(&format!(
+            "[{}] from \"{}\" ({}):\n{}\n\n",
+            i + 1,
+            item.source,
+            item.note,
+            item.text
+        ));
+    }
+    p.push_str(&format!("Question: {}\nAnswer:", req.question));
+    p
+}
+
 #[async_trait::async_trait]
 pub trait AnswerProvider: Send + Sync {
     /// Identifies the synthesiser. Must come from here and never from a literal

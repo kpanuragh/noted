@@ -74,6 +74,24 @@ impl ExtractionProvider for PoisonExtractor {
     }
 }
 
+/// Counts every call and always reports a rate limit. The counter is what the
+/// test is actually about: the failure mode being pinned is "how MANY requests
+/// does one 429 cost", not "does a 429 produce an error".
+struct RateLimitedExtractor {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl ExtractionProvider for RateLimitedExtractor {
+    fn model_id(&self) -> &str {
+        "rate-limited-extractor"
+    }
+    async fn extract(&self, _text: &str) -> Result<Extraction, ExtractError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(ExtractError::RateLimited("quota exceeded".into()))
+    }
+}
+
 async fn setup() -> (noted_db::PgPool, Uuid, Uuid) {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
@@ -454,4 +472,75 @@ async fn edge_set(
     .await
     .unwrap();
     rows.into_iter().collect()
+}
+
+
+/// A rate limit must abandon the batch, not spend one refused request per chunk
+/// learning the same fact repeatedly.
+///
+/// This is not hypothetical. Pointed at the live Gemini API on an exhausted
+/// free tier, the worker retried four times in two seconds, each call burning
+/// quota to be refused again — a backlog turning into a self-inflicted outage.
+/// `ExtractError::RateLimited` exists solely so this path can be told apart
+/// from a chunk the model merely could not handle, which SHOULD be skipped so
+/// its neighbours still get processed.
+#[tokio::test]
+async fn a_rate_limit_abandons_the_batch_instead_of_burning_it() {
+    let (pool, ws, page) = setup().await;
+    seed(&pool, page, 8, &Uuid::new_v4().to_string()).await;
+
+    let provider = Arc::new(RateLimitedExtractor {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let w = ExtractWorker::new_scoped(pool.clone(), provider.clone(), ws);
+
+    // `drain` gives up after N no-progress batches, reporting `Stalled` rather
+    // than a successful zero — a queue that cannot drain is not a drained
+    // queue, and the distinction is the whole point of that error.
+    let err = w.drain().await.expect_err("a fully rate-limited queue cannot drain");
+    let msg = err.to_string();
+    assert!(msg.contains("stalled"), "expected a stall, got: {msg}");
+
+    let calls = provider.calls.load(std::sync::atomic::Ordering::SeqCst);
+    // The precise bound matters more than the direction. Before the fix this
+    // was one call per chunk per batch attempt; `drain` tolerates a few
+    // no-progress batches before giving up, so a handful of calls is expected
+    // — but never one per seeded chunk in a single pass.
+    assert!(
+        calls < 8,
+        "one 429 cost {calls} requests across 8 chunks; the batch was not abandoned"
+    );
+    assert!(calls > 0, "the provider was never called at all");
+}
+
+/// The counterpart, and the reason `RateLimited` had to be a separate variant
+/// rather than a message on `Model`: an ordinary model failure must still be
+/// skipped so the chunks after it are processed. If the abandon-the-batch path
+/// were reached for every error, one bad chunk would stall its whole batch.
+#[tokio::test]
+async fn an_ordinary_model_error_still_only_skips_its_own_chunk() {
+    let (pool, ws, page) = setup().await;
+    let marker = Uuid::new_v4().to_string();
+    seed(&pool, page, 4, &marker).await;
+
+    // Poison the text `seed` generates for i = 0.
+    let provider = Arc::new(PoisonExtractor {
+        bad: format!("Alpha0 Beta0 {marker}"),
+        model_id: format!("poison-{marker}"),
+    });
+    let w = ExtractWorker::new_scoped(pool.clone(), provider.clone(), ws);
+
+    // Ends in a stall too — the poison chunk never drains — but the number
+    // that got through before that is what this test is about.
+    let extracted = match w.drain().await {
+        Ok(n) => n,
+        Err(noted_index::extract_worker::ExtractWorkerError::Stalled { extracted, .. }) => {
+            extracted
+        }
+        Err(e) => panic!("unexpected error: {e}"),
+    };
+    assert!(
+        extracted >= 3,
+        "one unextractable chunk stalled its neighbours: only {extracted} of 4 got through"
+    );
 }

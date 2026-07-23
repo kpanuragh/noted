@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::extract::{Extraction, ExtractionProvider};
+use crate::extract::{ExtractError, Extraction, ExtractionProvider};
 use crate::community_worker::CommunityWorker;
 use crate::graph_write::apply_extraction;
 
@@ -172,6 +172,24 @@ impl ExtractWorker {
             // would stall every other task sharing this runtime.
             let extraction: Extraction = match self.provider.extract(text).await {
                 Ok(e) => e,
+                // A rate limit is not this chunk's problem, it is every
+                // remaining chunk's problem. `continue` here would spend one
+                // refused request per chunk in the batch to learn the same
+                // fact N times, and against a quota-limited API that is how a
+                // backlog turns into a self-inflicted outage. Stopping returns
+                // whatever succeeded so far; the scheduler sees a batch that
+                // made little or no progress and backs off to the idle
+                // interval, which is exactly the pacing a 429 is asking for.
+                Err(ExtractError::RateLimited(msg)) => {
+                    tracing::warn!(
+                        error = %msg,
+                        succeeded,
+                        remaining = batch.len() - succeeded,
+                        "extraction provider is rate-limited; abandoning the rest of this \
+                         batch and backing off. The chunks stay in the queue."
+                    );
+                    return Ok(succeeded);
+                }
                 Err(err) => {
                     tracing::warn!(
                         hash = %content_hash,

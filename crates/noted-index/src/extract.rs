@@ -25,6 +25,16 @@ pub enum ExtractError {
     Model(String),
     #[error("extraction output invalid: {0}")]
     Invalid(String),
+    /// The provider refused because the caller is over its rate or quota limit.
+    ///
+    /// Distinct from [`ExtractError::Model`] because the correct response is
+    /// different in kind: a model error affects ONE chunk and the next one is
+    /// worth trying, whereas a rate limit affects every call that would follow
+    /// it. Collapsing the two turns a single 429 into a whole batch of doomed
+    /// requests, each of which spends quota to be refused — observed against
+    /// the live Gemini API, which retried four times in two seconds.
+    #[error("extraction rate-limited: {0}")]
+    RateLimited(String),
 }
 
 #[async_trait::async_trait]

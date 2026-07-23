@@ -16,6 +16,12 @@ embed = ["dep:fastembed"]
 # dependency, and there is no Ollama server in every environment (there is
 # none in CI/dev here) to talk to.
 extract-ollama = ["dep:reqwest", "dep:serde_json"]
+# The Gemini-backed providers for all three roles. Same dependency set as
+# `extract-ollama` but a separate flag on purpose: a deployment that runs a
+# local model should not have to compile in a hosted-API client to say so, and
+# vice versa. Both may be enabled together — an operator can reasonably want
+# cheap local extraction and a hosted answerer.
+gemini = ["dep:reqwest", "dep:serde_json"]
 
 [dependencies]
 sha2 = "0.10"

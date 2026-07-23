@@ -35,9 +35,30 @@ services:
       # it would never be sent and the app would look permanently signed out.
       # REMOVE THIS behind TLS.
       NOTED_INSECURE_COOKIES: "1"
-      # Deterministic stub extraction, so the graph pipeline runs out of the
-      # box. NOT a real model: point this at Ollama for a meaningful graph.
+      # The three model roles, configured independently — they have genuinely
+      # different shapes. Extraction runs once per chunk across the whole
+      # corpus (throughput-bound, mechanical, and where a per-token bill
+      # actually accumulates); answering runs once per question with a human
+      # waiting (latency-bound, and the one role where reasoning is the
+      # product). Each takes `stub`, `ollama:<model>` or `gemini:<model>`.
+      #
+      # `stub` is the honest default, not a placeholder: the pipeline runs out
+      # of the box and the graph it builds is DETERMINISTIC AND MEANINGLESS.
+      # A misconfigured spec is fatal at startup rather than falling back here,
+      # because a deployment quietly serving stub prose looks healthy.
       NOTED_EXTRACT: stub
+      # NOTED_ANSWER: gemini:gemini-3.5-flash
+      # NOTED_SUMMARY: gemini:gemini-3.5-flash
+      #
+      # For extraction prefer a NON-reasoning model: reading names out of a
+      # sentence is mechanical, and on a corpus-wide job the thinking tokens
+      # bill as output for no gain. Measured on one trivial extraction:
+      # gemini-3.6-flash spent 1010 thinking tokens, gemini-3.5-flash-lite
+      # spent 0, and the two answers were equivalent.
+      # NOTED_EXTRACT: gemini:gemini-3.5-flash-lite
+      #
+      # GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # NOTED_OLLAMA_URL: http://host.docker.internal:11434
       RUST_LOG: info
     ports:
       - "8787:8787"
