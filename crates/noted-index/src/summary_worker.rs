@@ -142,6 +142,52 @@ pub struct SummaryPass {
     pub failed: usize,
 }
 
+/// Which workspaces have communities awaiting a summary under `model_id`.
+///
+/// The scheduler is instance-wide but `SummaryWorker` is workspace-scoped —
+/// deliberately, since communities are a per-tenant artifact — so the loop
+/// needs to know which tenants have work before it can do any. Same
+/// set-difference shape as [`pending_summaries`], collapsed to the workspace.
+///
+/// `limit` bounds one pass: a workspace with thousands of pending communities
+/// must not starve every other workspace on the instance. The remainder is
+/// simply still pending on the next pass, because the queue is a QUERY rather
+/// than a cursor — there is no position to lose.
+///
+/// ORDERED, and that is load-bearing rather than tidiness. `LIMIT` without
+/// `ORDER BY` lets Postgres return any rows it likes, and in practice it
+/// returns the SAME arbitrary rows every time — so the same few workspaces
+/// would be served on every pass while the rest starved indefinitely. Not
+/// hypothetical: pointing this at a real database found 1867 workspaces
+/// pending under a new model id, of which a bounded, unordered query would
+/// have drained four, forever.
+///
+/// Oldest pending community first, so the queue drains FIFO and a workspace
+/// leaves it as soon as its summaries are written. A workspace whose
+/// summariser calls keep failing does hold its slot — but it holds one of
+/// `limit`, not all of them.
+pub async fn workspaces_with_pending_summaries(
+    pool: &sqlx::PgPool,
+    model_id: &str,
+    limit: i64,
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT c.workspace_id
+         FROM communities c
+         LEFT JOIN community_summaries s ON s.community_id = c.id
+         WHERE s.community_id IS NULL
+            OR s.member_set_hash IS DISTINCT FROM c.member_set_hash
+            OR s.model_id IS DISTINCT FROM $1
+         GROUP BY c.workspace_id
+         ORDER BY min(c.created_at)
+         LIMIT $2",
+    )
+    .bind(model_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
 /// The set-difference queue, in one query.
 ///
 /// A community is pending when `community_summaries` holds no row for it, or

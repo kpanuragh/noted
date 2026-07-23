@@ -43,7 +43,16 @@ async fn main() -> anyhow::Result<()> {
     // FATAL rather than a silent fall back to a stub — see providers.rs.
     let extractor = noted_server::providers::extractor().map_err(anyhow::Error::msg)?;
     let answerer = noted_server::providers::answerer().map_err(anyhow::Error::msg)?;
+    // `None` means no real model: the background pass stays off rather than
+    // persisting stub prose into community_summaries.
     let summariser = noted_server::providers::summariser().map_err(anyhow::Error::msg)?;
+    if summariser.is_none() {
+        tracing::warn!(
+            "NOTED_SUMMARY unset: community summaries will NOT be generated, so \
+             \"across everything\" has no themes to answer from. Set \
+             NOTED_SUMMARY=gemini:<model> or ollama:<model>."
+        );
+    }
 
     // Taken from the extractor INSTANCE rather than re-derived from the
     // environment. `AppState` previously parsed NOTED_EXTRACT a second time to
@@ -57,6 +66,11 @@ async fn main() -> anyhow::Result<()> {
         pool.clone(),
         embedder.clone(),
         extractor,
+        // The SAME summariser instance the Ask surface reads through, so a
+        // background-written summary and a lazily-refreshed one can never come
+        // from different models — `community_summaries` is keyed by
+        // `community_id` alone, so two models would overwrite each other.
+        summariser.clone(),
     )?;
     tracing::info!("background indexer started");
 
@@ -64,7 +78,11 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("noted-server listening on {bind}");
     let mut state = AppState::new(pool, embedder);
     state.answerer = answerer;
-    state.summariser = summariser;
+    // The read path still needs a provider; the stub is the honest stand-in
+    // when none is configured, because global search's lazy refresh must have
+    // something to call even though it will never find work to do.
+    state.summariser = summariser
+        .unwrap_or_else(|| Arc::new(noted_index::summary::StubSummariser::new()));
     state.extract_model = extract_model;
 
     axum::serve(listener, app(state)).await?;

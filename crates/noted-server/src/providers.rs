@@ -152,14 +152,23 @@ pub fn answerer() -> Result<Arc<dyn AnswerProvider>, String> {
     })
 }
 
-/// Builds the summariser used by global search.
-pub fn summariser() -> Result<Arc<dyn SummaryProvider>, String> {
+/// Builds the summariser used by global search and by the background
+/// summary pass.
+///
+/// Returns `None` when no REAL model is configured, and that distinction
+/// matters more here than for the answerer. A stub answer is transient — it is
+/// produced per request and never stored. A community summary is PERSISTED, so
+/// a stub one fills `community_summaries` with deterministic placeholder prose
+/// that global search then answers from, and a reader has no way to tell it
+/// from a real summary. The caller substitutes a stub for the read path if it
+/// wants one; the background pass must not run at all.
+pub fn summariser() -> Result<Option<Arc<dyn SummaryProvider>>, String> {
     let Some(spec) = spec_for("NOTED_SUMMARY") else {
-        return Ok(Arc::new(StubSummariser::new()));
+        return Ok(None);
     };
 
-    Ok(match parse(&spec)? {
-        Spec::Stub => Arc::new(StubSummariser::new()),
+    Ok(Some(match parse(&spec)? {
+        Spec::Stub => return Ok(None),
         Spec::Ollama(model) => {
             tracing::info!("summaries: ollama model {model} at {}", ollama_url());
             Arc::new(
@@ -174,7 +183,7 @@ pub fn summariser() -> Result<Arc<dyn SummaryProvider>, String> {
                     .map_err(|e| format!("could not build the Gemini summariser: {e}"))?,
             )
         }
-    })
+    }))
 }
 
 #[cfg(test)]
