@@ -231,7 +231,9 @@ fn parse_and_validate(raw: &str) -> Result<Extraction, ExtractError> {
         }
     }
 
-    Ok(Extraction {
+    // `sanitise` drops blank-named entities and edges with a blank endpoint —
+    // see its docs for why a blank name is graph corruption rather than noise.
+    Ok(crate::extract::sanitise(Extraction {
         entities: wire
             .entities
             .into_iter()
@@ -251,7 +253,7 @@ fn parse_and_validate(raw: &str) -> Result<Extraction, ExtractError> {
                 weight: e.weight,
             })
             .collect(),
-    })
+    }))
 }
 
 #[async_trait::async_trait]

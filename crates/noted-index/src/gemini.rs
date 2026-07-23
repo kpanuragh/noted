@@ -389,30 +389,30 @@ pub fn parse_extraction(raw: &str) -> Result<Extraction, ExtractError> {
     let wire: ExtractionWire = serde_json::from_str(raw)
         .map_err(|e| ExtractError::Invalid(format!("extraction was not the expected JSON: {e}")))?;
 
-    Ok(Extraction {
+    // Blank names and blank edge endpoints are dropped by the SHARED
+    // `sanitise` (see its docs: a blank name is graph corruption, not noise),
+    // so both providers cannot drift on what counts as writable output.
+    Ok(crate::extract::sanitise(Extraction {
         entities: wire
             .entities
             .into_iter()
-            .filter(|e| !e.name.trim().is_empty())
             .map(|e| crate::extract::ExtractedEntity {
-                name: e.name.trim().to_string(),
-                entity_type: e.entity_type.trim().to_string(),
-                description: e.description.filter(|d| !d.trim().is_empty()),
+                name: e.name,
+                entity_type: e.entity_type,
+                description: e.description,
             })
             .collect(),
         edges: wire
             .edges
             .into_iter()
-            .filter(|e| !e.source.trim().is_empty() && !e.target.trim().is_empty())
             .map(|e| crate::extract::ExtractedEdge {
-                source: e.source.trim().to_string(),
-                target: e.target.trim().to_string(),
-                relation: e.relation.trim().to_string(),
-                // Clamped, not rejected. A model that returns 1.4 has produced a
-                // usable edge with an out-of-range confidence; discarding the
-                // edge over it would lose real graph structure. NaN is sent to
-                // 0.0 explicitly because `clamp` PANICS on a NaN bound and
-                // `NaN.max(0.0)` is 0.0 only by accident of IEEE ordering.
+                source: e.source,
+                target: e.target,
+                relation: e.relation,
+                // Clamped, not rejected. An out-of-range confidence still
+                // describes a real edge; discarding it would lose graph
+                // structure over a formatting mistake. NaN is sent to 0.0
+                // explicitly because `clamp` PANICS on a NaN bound.
                 weight: if e.weight.is_nan() {
                     0.0
                 } else {
@@ -420,7 +420,7 @@ pub fn parse_extraction(raw: &str) -> Result<Extraction, ExtractError> {
                 },
             })
             .collect(),
-    })
+    }))
 }
 
 #[derive(serde::Deserialize)]
