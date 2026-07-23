@@ -84,3 +84,67 @@ fn projected_text_is_plain_not_xml_markup() {
         blocks[0].text
     );
 }
+
+/// Inline formatting must NOT reach the projected text.
+///
+/// `XmlText::get_string` serializes formatting marks as XML tags, so a bold run
+/// projected as `<bold>Dinosaurs</bold>` and a pasted link as
+/// `<link href="..." class="null" title="...">reptiles</link>`. That markup was
+/// written to `blocks.text`, which is the input to the full-text index, to the
+/// chunks that get embedded, and to the text handed to the extraction model.
+/// The visible symptom was raw tags in search snippets; the invisible ones were
+/// FTS matching on `href`, embeddings encoding Wikipedia URLs, and the graph
+/// extracting entities out of markup.
+///
+/// Every fixture in this file used unformatted text, so nothing caught it.
+///
+/// MECHANISM PROTECTED: the `diff`-based `XmlOut::Text` arm of `plain_text`.
+/// Restore `get_string` there and this test fails.
+#[test]
+fn inline_formatting_marks_never_reach_the_projected_text() {
+    let doc = NotedDoc::new();
+    doc.append_formatted_paragraph_for_test(&[
+        ("Dinosaurs", &[("bold", "true")]),
+        (" are a diverse group of ", &[]),
+        (
+            "reptiles",
+            &[
+                ("link", "true"),
+                ("href", "https://en.wikipedia.org/wiki/Reptile"),
+                ("class", "null"),
+                ("title", "Reptile"),
+            ],
+        ),
+        (".", &[]),
+    ]);
+
+    let text = &doc.project()[0].text;
+
+    assert_eq!(
+        text, "Dinosaurs are a diverse group of reptiles.",
+        "the projection must be the words, not the markup"
+    );
+    // Stated separately so a failure says WHICH leak happened.
+    assert!(!text.contains('<'), "a tag leaked into the text: {text}");
+    assert!(
+        !text.contains("href") && !text.contains("wikipedia"),
+        "link attributes leaked into the searchable text: {text}"
+    );
+    assert!(
+        !text.contains("bold") && !text.contains("class"),
+        "mark names leaked into the searchable text: {text}"
+    );
+}
+
+/// The text still has to survive intact — a fix that stripped the formatting by
+/// dropping the formatted RUNS would pass every assertion above.
+#[test]
+fn formatted_runs_keep_their_words() {
+    let doc = NotedDoc::new();
+    doc.append_formatted_paragraph_for_test(&[
+        ("plain ", &[]),
+        ("emphasised", &[("italic", "true")]),
+        (" tail", &[]),
+    ]);
+    assert_eq!(doc.project()[0].text, "plain emphasised tail");
+}
