@@ -79,6 +79,15 @@ pub mod extract_worker;
 #[cfg(feature = "extract-ollama")]
 pub mod extract_providers;
 
+// Real LLM-backed answerer and summariser. Behind the same feature flag as the
+// Ollama extractor, for the same reason: not every deployment has a model, and
+// the HTTP client should not be linked into one that does not.
+//
+// NOTE what is and is not proven here — see the module header. Nothing in this
+// repository's test suite has ever talked to a real model.
+#[cfg(feature = "extract-ollama")]
+pub mod ollama;
+
 // Embedding drags in fastembed -> ONNX runtime + a HuggingFace model downloader.
 // `noted-server` DOES use this now — it embeds search queries for hybrid search
 // (see noted-server's routes/search.rs) — but not every consumer of this crate
