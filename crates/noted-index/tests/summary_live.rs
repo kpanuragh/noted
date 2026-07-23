@@ -53,3 +53,51 @@ async fn who_is_at_the_head_of_the_summary_queue() {
         }
     }
 }
+
+
+/// Summarise ONE named workspace now, regardless of its place in the
+/// instance-wide queue.
+///
+/// The background pass is fair (oldest first) and this database is shared with
+/// ~1800 test workspaces, so a real workspace can be hours down the queue. This
+/// is the operator escape hatch: point it at a workspace and wait.
+///
+/// ```text
+/// SUMMARISE_WORKSPACE=<uuid> cargo test -p noted-index --features extract-ollama \
+///   --test summary_live summarise_one_workspace_now -- --ignored --nocapture
+/// ```
+#[tokio::test]
+#[ignore = "operator tool: summarises a named workspace with a real model"]
+async fn summarise_one_workspace_now() {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
+    let pool = noted_db::connect(&url).await.unwrap();
+    let ws: uuid::Uuid = std::env::var("SUMMARISE_WORKSPACE")
+        .expect("set SUMMARISE_WORKSPACE=<uuid>")
+        .parse()
+        .unwrap();
+    let model = std::env::var("SUMMARISE_MODEL").unwrap_or_else(|_| "llama3.2:1b".into());
+    let base = std::env::var("NOTED_OLLAMA_URL")
+        .unwrap_or_else(|_| "http://localhost:11434".into());
+
+    let provider =
+        Arc::new(noted_index::ollama::OllamaSummariser::new(&base, &model).unwrap());
+    let worker = noted_index::summary_worker::SummaryWorker::new(pool.clone(), provider, ws);
+
+    let pass = worker.run_once().await.expect("summary pass");
+    println!("workspace {ws}: {pass:?}");
+
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT s.summary FROM community_summaries s
+         JOIN communities c ON c.id = s.community_id
+         WHERE c.workspace_id = $1 ORDER BY c.level",
+    )
+    .bind(ws)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    for (i, (summary,)) in rows.iter().enumerate() {
+        println!("\n--- theme {} ---\n{}", i + 1, summary);
+    }
+    assert!(!rows.is_empty(), "no summary was written");
+}
