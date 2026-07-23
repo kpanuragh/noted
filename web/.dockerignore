@@ -1,0 +1,11 @@
+target/
+web/node_modules/
+web/.next/
+.fastembed_cache/
+.git/
+# Never copy local tooling or secrets into an image.
+.env
+.env.local
+.claude/
+.superpowers/
+docs/superpowers/

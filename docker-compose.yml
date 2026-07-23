@@ -1,3 +1,5 @@
+# The whole application. `docker compose up` gives you a working noted at
+# http://localhost:3000 with nothing else installed.
 services:
   postgres:
     image: pgvector/pgvector:0.8.5-pg17-trixie
@@ -15,5 +17,51 @@ services:
       timeout: 5s
       retries: 10
 
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        # `service_healthy`, not `service_started`: the server runs migrations
+        # at startup, and Postgres accepting a TCP connection is not the same as
+        # Postgres being ready to serve one.
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://noted:noted@postgres:5432/noted
+      BIND_ADDR: 0.0.0.0:8787
+      CORS_ALLOWED_ORIGIN: http://localhost:3000
+      # Plain HTTP on localhost, so the session cookie cannot carry `Secure` —
+      # it would never be sent and the app would look permanently signed out.
+      # REMOVE THIS behind TLS.
+      NOTED_INSECURE_COOKIES: "1"
+      # Deterministic stub extraction, so the graph pipeline runs out of the
+      # box. NOT a real model: point this at Ollama for a meaningful graph.
+      NOTED_EXTRACT: stub
+      RUST_LOG: info
+    ports:
+      - "8787:8787"
+    volumes:
+      # The ONNX embedding model, ~400MB. On a named volume so it is downloaded
+      # once rather than on every image rebuild.
+      - noted_models:/home/noted/.fastembed_cache
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      args:
+        # Next inlines NEXT_PUBLIC_* at BUILD time, so this has to be a build
+        # arg — setting it only at runtime would leave the browser bundle
+        # pointing at whatever the default was.
+        NEXT_PUBLIC_API_BASE: http://localhost:8787
+    depends_on:
+      - api
+    environment:
+      NEXT_PUBLIC_API_BASE: http://localhost:8787
+    ports:
+      - "3000:3000"
+
 volumes:
   noted_pgdata:
+  noted_models:

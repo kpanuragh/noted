@@ -59,22 +59,26 @@ Working and tested. **Not production-ready** — read the caveats.
 
 Requires Docker, Rust (edition 2024), and Node 20+.
 
+Everything runs in Docker — you need nothing else installed.
+
 ```bash
 git clone git@github.com:kpanuragh/noted.git
 cd noted
-cp .env.example .env
-
-# Postgres 17 + pgvector
-docker compose up -d
-
-# API on :8787 — migrations run automatically at startup
-cargo run -p noted-server
-
-# Web app on :3000
-cd web && npm install && npm run dev
+docker compose up -d --build
 ```
 
-Open <http://localhost:3000>.
+Open <http://localhost:3000> and create an account. The first build compiles the
+Rust workspace and takes a few minutes; the embedding model (~400MB) downloads
+on first start into a named volume, so it survives rebuilds.
+
+### Or run it from source
+
+```bash
+cp .env.example .env
+docker compose up -d postgres          # just the database
+cargo run -p noted-server              # API on :8787
+cd web && npm install && npm run dev   # web on :3000
+```
 
 ### Making search and the graph work
 
