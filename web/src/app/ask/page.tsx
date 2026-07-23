@@ -1,30 +1,43 @@
 "use client";
 
 import { useState } from "react";
-import { useWorkspace } from "@/lib/useWorkspace";
 import Link from "next/link";
-import {
-  api,
-  type Citation,
-  type GlobalAnswer,
-  type LocalAnswer,
-} from "@/lib/api";
-import styles from "@/components/dashboard.module.css";
-
-
+import { api, type Citation, type GlobalAnswer, type LocalAnswer } from "@/lib/api";
+import { useWorkspace } from "@/lib/useWorkspace";
+import s from "@/components/ui.module.css";
 
 type Mode = "local" | "global";
 
 /**
- * Why a passage is in the answer, in the user's words.
+ * THE SIGNATURE ELEMENT.
  *
- * The whole point of the citation surface: a graph-reached passage looks
- * identical to a keyword match unless the UI says otherwise, and "why do you
- * believe this" is the question a graph-backed answer has to be able to survive.
+ * Draws how far a passage was from the question. A direct keyword match is a
+ * single neutral dot; anything the graph walked to is warm and carries one
+ * diamond per hop:
+ *
+ *     ●        matched your words
+ *     ◆─       one step away
+ *     ◆─◆      two steps away
+ *
+ * This is information, not ornament — no other note app can draw it, because no
+ * other note app knows the distance. It is also the only place the accent
+ * colour is allowed on this page.
  */
-function whyLabel(why: Citation["why"]): string {
-  if (why.kind === "seed") return "matched your words";
-  return why.hops === 1 ? "one step away in your notes" : `${why.hops} steps away in your notes`;
+function Trace({ why }: { why: Citation["why"] }) {
+  if (why.kind === "seed") {
+    return (
+      <span className={s.trace}>
+        <span className={s.traceGlyph}>●</span> matched your words
+      </span>
+    );
+  }
+  const glyph = why.hops <= 1 ? "◆─" : "◆─".repeat(Math.min(why.hops, 3));
+  return (
+    <span className={s.traceDerived}>
+      <span className={s.traceGlyph}>{glyph}</span>
+      {why.hops === 1 ? "one step away" : `${why.hops} steps away`}
+    </span>
+  );
 }
 
 export default function AskPage() {
@@ -40,48 +53,43 @@ export default function AskPage() {
   async function ask(e: React.FormEvent) {
     e.preventDefault();
     const q = question.trim();
-    if (!q || busy) return;
-
+    if (!q || busy || !workspaceId) return;
     setBusy(true);
     setError(null);
     setLocal(null);
     setGlobal(null);
     try {
-      if (mode === "local") {
-        setLocal(await api.askLocal(workspaceId, q));
-      } else {
-        setGlobal(await api.askGlobal(workspaceId, q));
-      }
+      if (mode === "local") setLocal(await api.askLocal(workspaceId, q));
+      else setGlobal(await api.askGlobal(workspaceId, q));
     } catch {
-      setError(
-        "Couldn't answer that just now. The API may be unreachable — your notes are unaffected.",
-      );
+      setError("Couldn't answer that just now. Your notes are unaffected.");
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <main className={styles.main}>
-      <header className={styles.panel}>
-        <h1 className={styles.title}>Ask your notes</h1>
-        <p className={styles.subtitle}>
-          <strong>About a thing</strong> follows the connections between your notes.{" "}
-          <strong>Across everything</strong> reads the themes it has found. Every answer shows its
-          sources.
+    <main className={s.main} style={{ maxWidth: 760, margin: "0 auto" }}>
+      <header style={{ marginBottom: 24 }}>
+        <p className={s.eyebrow} style={{ marginBottom: 10 }}>
+          <Link href="/" style={{ textDecoration: "none" }}>
+            ← Workspace
+          </Link>
         </p>
-        <p className={styles.subtitle}>
-          <Link href="/">← Back to your workspace</Link>
+        <h1 style={{ marginBottom: 8 }}>Ask your notes</h1>
+        <p className={s.lede}>
+          Every answer shows which passages it used, and whether it found them by
+          your words or by following the connections between your notes.
         </p>
       </header>
 
-      <form onSubmit={ask} className={styles.panel} style={{ marginBottom: 24 }}>
-        <div role="radiogroup" aria-label="Kind of question" className={styles.actions}>
+      <form onSubmit={ask} className={`${s.card} ${s.cardLift}`} style={{ marginBottom: 28 }}>
+        <div role="radiogroup" aria-label="Kind of question" className={s.actions}>
           <button
             type="button"
             role="radio"
             aria-checked={mode === "local"}
-            className={mode === "local" ? styles.primaryAction : styles.secondaryAction}
+            className={mode === "local" ? s.button : s.buttonQuiet}
             onClick={() => setMode("local")}
           >
             About a thing
@@ -90,72 +98,76 @@ export default function AskPage() {
             type="button"
             role="radio"
             aria-checked={mode === "global"}
-            className={mode === "global" ? styles.primaryAction : styles.secondaryAction}
+            className={mode === "global" ? s.button : s.buttonQuiet}
             onClick={() => setMode("global")}
           >
             Across everything
           </button>
         </div>
 
-        <label htmlFor="question" className={styles.panelTitle} style={{ marginTop: 16 }}>
+        <label htmlFor="question" className={s.label} style={{ marginTop: 18 }}>
           Your question
         </label>
         <input
           id="question"
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
+          className={s.field}
           placeholder={
             mode === "local"
               ? "what went wrong with the Helios migration?"
               : "what have I been thinking about lately?"
           }
-          style={{ width: "100%", padding: "10px 12px", marginTop: 8, borderRadius: 8, border: "1px solid rgba(128,128,128,0.35)", background: "transparent", color: "inherit", font: "inherit" }}
         />
-        <div className={styles.actions} style={{ marginTop: 12 }}>
-          <button type="submit" className={styles.primaryAction} disabled={busy || !question.trim()}>
+        <div className={s.actions} style={{ marginTop: 14 }}>
+          <button type="submit" className={s.button} disabled={busy || !question.trim()}>
             {busy ? "Reading your notes…" : "Ask"}
           </button>
         </div>
       </form>
 
       {error && (
-        <p role="alert" className={styles.error}>
+        <p role="alert" className={s.error}>
           {error}
         </p>
       )}
 
       {local && (
-        <section className={styles.panel} aria-labelledby="answer-heading">
-          <h2 id="answer-heading" className={styles.panelTitle}>
+        <section className={s.card} aria-labelledby="answer-heading">
+          <h2 id="answer-heading" className={s.sectionTitle} style={{ marginBottom: 10 }}>
             Answer
           </h2>
-          <p>{local.answer}</p>
+          <p style={{ marginBottom: 18 }}>{local.answer}</p>
 
           {local.seed_entities.length > 0 && (
-            <p className={styles.subtitle}>
-              Followed from:{" "}
-              {local.seed_entities.map((e) => e.name).join(", ")}
+            <p className={s.muted} style={{ marginBottom: 20 }}>
+              Followed from {local.seed_entities.map((e) => e.name).join(", ")}
             </p>
           )}
 
-          <h3 className={styles.panelTitle} style={{ marginTop: 20 }}>
+          <hr className={s.divider} style={{ margin: "18px 0" }} />
+
+          <h3 className={s.eyebrow} style={{ marginBottom: 8 }}>
             {local.citations.length === 0
               ? "No sources"
-              : `Sources (${local.citations.length})`}
+              : `${local.citations.length} source${local.citations.length === 1 ? "" : "s"}`}
           </h3>
           {local.citations.length === 0 ? (
-            <p className={styles.empty}>
-              Nothing in this workspace bears on that yet. Write a note, then run the indexer.
+            <p className={s.empty}>
+              Nothing in this workspace bears on that yet. Write a note — it becomes
+              searchable on its own within a minute or so.
             </p>
           ) : (
-            <ul className={styles.list}>
+            <ul className={s.list}>
               {local.citations.map((c) => (
-                <li key={c.content_hash} className={styles.listItem}>
-                  <Link href={`/pages/${c.page_id}`} className={styles.pageLink}>
-                    {c.title}
-                  </Link>
-                  <span className={styles.pageTime}>{whyLabel(c.why)}</span>
-                  <p className={styles.muted}>{c.snippet}</p>
+                <li key={c.content_hash} style={{ padding: "12px 0", borderBottom: "1px solid var(--line)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "baseline" }}>
+                    <Link href={`/pages/${c.page_id}`} className={s.rowTitle}>
+                      {c.title}
+                    </Link>
+                    <Trace why={c.why} />
+                  </div>
+                  <p className={s.muted} style={{ marginTop: 5 }}>{c.snippet}</p>
                 </li>
               ))}
             </ul>
@@ -164,45 +176,46 @@ export default function AskPage() {
       )}
 
       {global_ && (
-        <section className={styles.panel} aria-labelledby="global-heading">
-          <h2 id="global-heading" className={styles.panelTitle}>
+        <section className={s.card} aria-labelledby="global-heading">
+          <h2 id="global-heading" className={s.sectionTitle} style={{ marginBottom: 10 }}>
             Answer
           </h2>
-          <p>{global_.answer}</p>
+          <p style={{ marginBottom: 14 }}>{global_.answer}</p>
 
-          {/*
-            Coverage is stated, never implied. An answer drawn from 3 of 40
-            themes is a different claim from one drawn from all 40, and only the
-            reader can decide what to do with that.
-          */}
+          {/* Coverage is stated, never implied: an answer from 3 of 40 themes is
+              a different claim from one drawn from all 40. */}
           {global_.skipped_unsummarised > 0 && (
-            <p role="note" className={styles.subtitle}>
+            <p role="note" className={s.muted}>
               Read {global_.partials.length} theme
               {global_.partials.length === 1 ? "" : "s"}; {global_.skipped_unsummarised} more
-              {global_.skipped_unsummarised === 1 ? " has" : " have"} not been summarised yet and
-              were not consulted.
+              {global_.skipped_unsummarised === 1 ? " has" : " have"} not been summarised yet.
             </p>
           )}
 
-          <h3 className={styles.panelTitle} style={{ marginTop: 20 }}>
+          <hr className={s.divider} style={{ margin: "18px 0" }} />
+
+          <h3 className={s.eyebrow} style={{ marginBottom: 8 }}>
             {global_.partials.length === 0 ? "No themes" : "Themes consulted"}
           </h3>
           {global_.partials.length === 0 ? (
-            <p className={styles.empty}>
-              No themes have been found yet. They appear once the indexer has clustered your notes.
+            <p className={s.empty}>
+              No themes yet. They appear once the indexer has clustered your notes.
             </p>
           ) : (
-            <ul className={styles.list}>
+            <ul className={s.list}>
               {global_.partials.map((p) => (
-                <li key={p.community_id} className={styles.listItem}>
-                  <span className={styles.pageLink}>
-                    {p.member_count} related note{p.member_count === 1 ? "" : "s"}
-                  </span>
-                  <span className={styles.pageTime}>
-                    bearing {(p.relevance * 100).toFixed(0)}%
-                    {p.was_stale ? " · summary is catching up" : ""}
-                  </span>
-                  <p className={styles.muted}>{p.text}</p>
+                <li key={p.community_id} style={{ padding: "12px 0", borderBottom: "1px solid var(--line)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "baseline" }}>
+                    <span className={s.rowTitle}>
+                      {p.member_count} related note{p.member_count === 1 ? "" : "s"}
+                    </span>
+                    <span className={s.traceDerived}>
+                      <span className={s.traceGlyph}>◆</span>
+                      {(p.relevance * 100).toFixed(0)}% bearing
+                      {p.was_stale ? " · catching up" : ""}
+                    </span>
+                  </div>
+                  <p className={s.muted} style={{ marginTop: 5 }}>{p.text}</p>
                 </li>
               ))}
             </ul>

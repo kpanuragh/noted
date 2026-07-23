@@ -34,6 +34,16 @@ async function stubApi(
     });
   };
 
+  // The workspace list. The dashboard resolves which workspace it is looking at
+  // from the server rather than from a build-time constant, so without this the
+  // page has no workspace and renders no panels at all.
+  await page.route(`${API}/api/workspaces`, (r) =>
+    r.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([{ id: WS, name: "Test workspace", role: "owner" }]),
+    }),
+  );
   await page.route(`${API}/api/pages/recent*`, (r) => fulfill(r, stubs.recent ?? {}));
   await page.route(`${API}/api/workspaces/*/stats`, (r) => fulfill(r, stubs.stats ?? {}));
   // Must be registered last: `**/api/pages*` also matches /api/pages/recent,
@@ -131,19 +141,43 @@ test("both panels failing still leaves usable quick actions", async ({ page }) =
 });
 
 test("retry re-requests a panel that failed", async ({ page }) => {
-  let calls = 0;
+  // This test drives its own routes rather than `stubApi`, so it needs the
+  // workspace list too — without it the dashboard has no workspace and renders
+  // no panels to retry.
+  await page.route(`${API}/api/workspaces`, (r) =>
+    r.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([{ id: WS, name: "Test workspace", role: "owner" }]),
+    }),
+  );
+  // The route serves 500 until the test says otherwise, rather than counting
+  // calls. Counting is not a stable proxy for "the user clicked retry": React
+  // StrictMode double-invokes effects in dev, so the panel fetches twice on
+  // mount and a call-counting stub would hand it a success before anyone
+  // touched the button — which is exactly how this test started passing for the
+  // wrong reason and then failing for the right one.
+  let recovered = false;
+  let callsAfterRetry = 0;
   await page.route(`${API}/api/workspaces/*/stats`, async (route) => {
-    calls += 1;
-    if (calls === 1) {
+    if (!recovered) {
       await route.fulfill({ status: 500, body: "" });
       return;
     }
+    callsAfterRetry += 1;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({ pages: 1, chunks_indexed: 2, entities: 3, edges: 4 }),
     });
   });
+  // `/api/pages*` does NOT match `/api/pages/recent` — Playwright's `*` does
+  // not cross a `/`. Left unstubbed, recent-pages hits the real API, gets a
+  // 401, and the app correctly redirects to /signin, so the panel under test
+  // never renders at all.
+  await page.route(`${API}/api/pages/recent*`, (r) =>
+    r.fulfill({ status: 200, contentType: "application/json", body: "[]" }),
+  );
   await page.route(`${API}/api/pages*`, (r) =>
     r.fulfill({ status: 200, contentType: "application/json", body: "[]" }),
   );
@@ -151,6 +185,8 @@ test("retry re-requests a panel that failed", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.getByText(/insights are unavailable/i)).toBeVisible();
+
+  recovered = true;
   await page
     .getByRole("region", { name: "Your knowledge base" })
     .getByRole("button", { name: "Try again" })
@@ -158,7 +194,7 @@ test("retry re-requests a panel that failed", async ({ page }) => {
 
   await expect(page.getByText(/insights are unavailable/i)).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Your knowledge base" })).toContainText("3");
-  expect(calls).toBe(2);
+  expect(callsAfterRetry).toBeGreaterThan(0);
 });
 
 /**

@@ -1,94 +1,91 @@
 "use client";
 
 import { useState } from "react";
-import { useWorkspace } from "@/lib/useWorkspace";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { PageTree } from "@/components/PageTree";
 import { RecentPages } from "@/components/RecentPages";
 import { WorkspaceStatsPanel } from "@/components/WorkspaceStatsPanel";
 import { PanelBoundary } from "@/components/PanelBoundary";
+import { useWorkspace } from "@/lib/useWorkspace";
 import { api } from "@/lib/api";
-import styles from "@/components/dashboard.module.css";
+import s from "@/components/ui.module.css";
 
-
-
-/**
- * The workspace dashboard: what you were last working on, and what noted has
- * learned from it. Each panel fetches and fails independently — see
- * RecentPages / WorkspaceStatsPanel — so a backend endpoint that is down or
- * not yet deployed degrades one card instead of blanking the landing page.
- */
 export default function Home() {
-  // Which workspace this is depends on WHO IS SIGNED IN, so it is asked for at
-  // runtime rather than baked in at build time. See `useWorkspace`.
+  const router = useRouter();
   const ws = useWorkspace();
   const workspaceId = ws.status === "ready" ? ws.current : "";
-  const router = useRouter();
   const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  async function handleNewPage() {
+  async function newPage() {
+    if (!workspaceId || creating) return;
     setCreating(true);
-    setCreateError(false);
+    setError(null);
     try {
       const page = await api.createPage(workspaceId, null, "Untitled");
       router.push(`/pages/${page.id}`);
     } catch {
-      setCreateError(true);
+      setError("Couldn't create a page. The API may be unreachable.");
       setCreating(false);
     }
   }
 
   return (
-    <main className={styles.layout}>
-      <nav className={styles.sidebar} aria-label="Pages">
-        <h2 className={styles.sidebarHeading}>Pages</h2>
-        <PageTree
-          workspaceId={workspaceId}
-          onSelect={(p) => router.push(`/pages/${p.id}`)}
-        />
+    <div className={s.app}>
+      <nav className={s.sidebar}>
+        <div className={s.brand}>
+          <span className={s.brandMark}>◆─</span>
+          <span className={s.brandName}>noted</span>
+        </div>
+        <div>
+          <p className={s.eyebrow} style={{ marginBottom: 10 }}>
+            Pages
+          </p>
+          {workspaceId && (
+            <PageTree
+              workspaceId={workspaceId}
+              onSelect={(p) => router.push(`/pages/${p.id}`)}
+            />
+          )}
+        </div>
       </nav>
 
-      <div className={styles.main}>
-        <h1 className={styles.title}>Your workspace</h1>
-        <p className={styles.subtitle}>
-          Pick up where you left off, or ask your notes a question.
-        </p>
+      <main className={s.main}>
+        <header style={{ marginBottom: 28 }}>
+          <h1 style={{ marginBottom: 8 }}>Your workspace</h1>
+          <p className={s.lede}>
+            Pick up where you left off, or ask your notes a question.
+          </p>
+        </header>
 
-        <div className={styles.actions}>
-          <button
-            type="button"
-            className={styles.primaryAction}
-            onClick={handleNewPage}
-            disabled={creating}
-          >
+        <div className={s.actions} style={{ marginBottom: 32 }}>
+          <button className={s.button} onClick={newPage} disabled={!workspaceId || creating}>
             {creating ? "Creating…" : "New page"}
           </button>
-          <Link href="/search" className={styles.secondaryAction}>
-            Search your notes
+          <Link href="/ask" className={s.buttonQuiet} style={{ textDecoration: "none" }}>
+            Ask your notes
+          </Link>
+          <Link href="/search" className={s.buttonQuiet} style={{ textDecoration: "none" }}>
+            Search
           </Link>
         </div>
 
-        {createError && (
-          <p className={styles.error} role="alert" style={{ marginBottom: 20 }}>
-            Couldn&apos;t create the page. Check that the noted server is running and
-            try again.
+        {error && (
+          <p role="alert" className={s.error} style={{ marginBottom: 24 }}>
+            {error}
           </p>
         )}
 
-        {/* One boundary per panel, not one around both: a shared boundary
-            would let either panel's crash take out the other, which is the
-            blanking this is meant to stop. */}
-        <div className={styles.panels}>
+        <div className={s.panels}>
           <PanelBoundary title="Recently edited">
-            <RecentPages workspaceId={workspaceId} />
+            {workspaceId && <RecentPages workspaceId={workspaceId} />}
           </PanelBoundary>
           <PanelBoundary title="Your knowledge base">
-            <WorkspaceStatsPanel workspaceId={workspaceId} />
+            {workspaceId && <WorkspaceStatsPanel workspaceId={workspaceId} />}
           </PanelBoundary>
         </div>
-      </div>
-    </main>
+      </main>
+    </div>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { Component, type ReactNode } from "react";
-import styles from "./dashboard.module.css";
+import styles from "./ui.module.css";
 
 /**
  * Contains a render-time throw to the one panel that threw.
@@ -35,8 +35,8 @@ export class PanelBoundary extends Component<
   render() {
     if (this.state.crashed) {
       return (
-        <section className={styles.panel} aria-label={this.props.title}>
-          <h2 className={styles.panelTitle}>{this.props.title}</h2>
+        <section className={styles.card} aria-label={this.props.title}>
+          <h2 className={styles.sectionTitle}>{this.props.title}</h2>
           <p className={styles.error} role="alert">
             This panel couldn&apos;t be displayed. The rest of your workspace is
             unaffected — reload the page to try again.
