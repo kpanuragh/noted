@@ -818,6 +818,40 @@ pub async fn summaries_for_search(
 /// `summary_hash` is the hash of the text the vector was made from, so a
 /// regenerated summary can be detected and re-embedded rather than left with a
 /// vector describing prose that no longer exists.
+/// Store a summary embedding, letting POSTGRES compute the summary hash.
+///
+/// The hash must equal the `md5(s.summary)` that
+/// [`summaries_needing_embedding`] compares against, or the row looks
+/// permanently stale and is re-embedded on every pass forever. Computing it
+/// here, in the same expression the queue uses, makes that agreement
+/// structural rather than something two implementations have to keep matching
+/// — a Rust md5 and Postgres's could differ over nothing more than text
+/// encoding and the symptom would be an invisible infinite loop.
+pub async fn store_summary_embedding_for_text(
+    pool: &sqlx::PgPool,
+    community_id: Uuid,
+    model_id: &str,
+    summary: &str,
+    embedding: &[f32],
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO community_summary_embeddings
+             (community_id, model_id, summary_hash, embedding)
+         VALUES ($1, $2, md5($3), $4)
+         ON CONFLICT (community_id, model_id)
+         DO UPDATE SET summary_hash = EXCLUDED.summary_hash,
+                       embedding = EXCLUDED.embedding,
+                       created_at = now()",
+    )
+    .bind(community_id)
+    .bind(model_id)
+    .bind(summary)
+    .bind(pgvector::Vector::from(embedding.to_vec()))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn store_summary_embedding(
     pool: &sqlx::PgPool,
     community_id: Uuid,
@@ -841,6 +875,36 @@ pub async fn store_summary_embedding(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Workspaces holding at least one summary whose embedding is missing or stale.
+///
+/// The scheduler is instance-wide; this queue, like the summary queue, is
+/// per-tenant. Same set-difference shape as [`summaries_needing_embedding`],
+/// collapsed to the workspace, and ordered so a bounded pass cannot serve the
+/// same few workspaces forever while the rest starve.
+pub async fn workspaces_with_summaries_needing_embedding(
+    pool: &sqlx::PgPool,
+    embed_model: &str,
+    summariser_model: &str,
+    limit: i64,
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT c.workspace_id
+         FROM communities c
+         JOIN community_summaries s ON s.community_id = c.id AND s.model_id = $2
+         LEFT JOIN community_summary_embeddings e
+           ON e.community_id = c.id AND e.model_id = $1
+         WHERE e.community_id IS NULL OR e.summary_hash IS DISTINCT FROM md5(s.summary)
+         GROUP BY c.workspace_id
+         ORDER BY min(c.created_at)
+         LIMIT $3",
+    )
+    .bind(embed_model)
+    .bind(summariser_model)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
 }
 
 /// Summaries whose embedding is missing or stale, for the worker to redo.

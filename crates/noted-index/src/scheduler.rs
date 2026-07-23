@@ -157,6 +157,10 @@ impl Scheduler {
         let stopping_task = stopping.clone();
 
         let sweep_pool = pool.clone();
+        // Cloned BEFORE the worker takes ownership: the summary-embedding stage
+        // must use the SAME provider, or summaries would be embedded under a
+        // different model_id than the one global search reads with.
+        let summary_embedder = Arc::clone(&embedder);
         let embed_worker = Worker::new(pool.clone(), embedder)?;
         let extract_worker = extractor.map(|e| ExtractWorker::new(pool.clone(), e));
         let summary_pool = pool.clone();
@@ -176,6 +180,7 @@ impl Scheduler {
                     extract_worker.as_ref(),
                     summariser.as_ref(),
                     &summary_pool,
+                    &summary_embedder,
                 )
                 .await;
 
@@ -256,11 +261,17 @@ impl Scheduler {
 /// and the next pass simply sees them again.
 const SUMMARY_WORKSPACES_PER_PASS: i64 = 4;
 
+/// Summaries embedded per workspace per pass. Embedding is cheap and local
+/// (no model call over the network), so this is larger than the summary bound.
+const SUMMARY_EMBED_BATCH: i64 = 32;
+
+
 async fn run_pass(
     embed: &Worker,
     extract: Option<&ExtractWorker>,
     summariser: Option<&Arc<dyn crate::summary::SummaryProvider>>,
     pool: &sqlx::PgPool,
+    embedder: &Arc<dyn crate::provider::EmbeddingProvider>,
 ) -> bool {
     let mut did_work = false;
 
@@ -349,6 +360,85 @@ async fn run_pass(
                 }
             }
             Err(e) => tracing::warn!(error = %e, "could not poll for pending summaries"),
+        }
+
+        // ------------------------------------------- summary embeddings --
+        //
+        // A summary nobody has EMBEDDED is invisible to global search.
+        // `summaries_by_similarity` — the semantic path, and the one the Ask
+        // surface uses whenever it has a question vector — INNER JOINs
+        // `community_summary_embeddings`, so a community with perfectly good
+        // prose and no vector is reported as "not summarised yet".
+        //
+        // `store_summary_embedding` and `summaries_needing_embedding` were both
+        // written for this and had NO production caller: the queue query even
+        // says "for the worker to redo", and the worker did not exist. The
+        // observable symptom was a workspace with 7 valid, current summaries
+        // that global search reported as 0 themes read.
+        let embed_model = embedder.model_id().to_string();
+        match noted_db::community::workspaces_with_summaries_needing_embedding(
+            pool,
+            &embed_model,
+            &model_id,
+            SUMMARY_WORKSPACES_PER_PASS,
+        )
+        .await
+        {
+            Ok(workspaces) => {
+                for ws in workspaces {
+                    match noted_db::community::summaries_needing_embedding(
+                        pool,
+                        ws,
+                        &embed_model,
+                        &model_id,
+                        SUMMARY_EMBED_BATCH,
+                    )
+                    .await
+                    {
+                        Ok(rows) if !rows.is_empty() => {
+                            let texts: Vec<String> =
+                                rows.iter().map(|(_, t)| t.clone()).collect();
+                            match embedder.embed(&texts).await {
+                                Ok(vectors) => {
+                                    let mut stored = 0usize;
+                                    for ((community_id, text), vector) in
+                                        rows.iter().zip(vectors)
+                                    {
+                                        if let Err(e) =
+                                            noted_db::community::store_summary_embedding_for_text(
+                                                pool,
+                                                *community_id,
+                                                &embed_model,
+                                                text,
+                                                &vector,
+                                            )
+                                            .await
+                                        {
+                                            tracing::warn!(error = %e, %community_id, "could not store a summary embedding");
+                                        } else {
+                                            stored += 1;
+                                        }
+                                    }
+                                    if stored > 0 {
+                                        did_work = true;
+                                        tracing::info!(
+                                            workspace = %ws,
+                                            embedded = stored,
+                                            "embedded community summaries"
+                                        );
+                                    }
+                                }
+                                Err(e) => tracing::warn!(error = %e, workspace = %ws, "could not embed summaries; they stay queued"),
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(error = %e, workspace = %ws, "could not poll summaries needing embedding"),
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "could not poll for summaries needing embedding")
+            }
         }
     }
 
