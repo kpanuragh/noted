@@ -1,0 +1,189 @@
+/*
+ * The writing surface.
+ *
+ * Previously `<EditorContent>` shipped with NO styles at all: unfocused it was
+ * indistinguishable from the page background, and focused it inherited the
+ * global focus ring — so the only way to tell where the editor was, was to
+ * click and see an amber box appear. A document surface should be visible
+ * before you touch it.
+ */
+
+.wrap {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  transition: border-color 0.15s ease;
+}
+
+/* Focus is shown on the WRAPPER, quietly. A document is not a form field: the
+   caret is the primary affordance, so the surface only warms slightly to
+   confirm which pane has the keyboard. */
+.wrap:focus-within {
+  border-color: var(--line-strong);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.tool {
+  border: 0;
+  background: none;
+  color: var(--slate);
+  border-radius: 5px;
+  padding: 5px 8px;
+  font-size: 0.8125rem;
+  font-weight: 550;
+  cursor: pointer;
+  line-height: 1.2;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.tool:hover {
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+
+/* Active marks are stated, not implied — a writer needs to know whether the
+   next character will be bold before typing it. */
+.toolActive {
+  composes: tool;
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+
+.toolSep {
+  width: 1px;
+  align-self: stretch;
+  background: var(--line);
+  margin: 3px 5px;
+}
+
+.hint {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--slate-soft);
+  padding-right: 4px;
+}
+
+@media (max-width: 640px) {
+  .hint {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------------- the prose -- */
+
+.surface :global(.ProseMirror) {
+  /* Tall enough to read as "a page", so an empty document still looks like
+     somewhere to write rather than a collapsed strip. */
+  min-height: 58vh;
+  padding: 22px 24px 40px;
+  /* A comfortable measure. Full-bleed text across a 1280px window is
+     unreadable, and this is the one surface where reading matters most. */
+  max-width: 68ch;
+  font-size: 1rem;
+  line-height: 1.7;
+  color: var(--ink);
+}
+
+/* The caret is the affordance here; a ring around the whole document would be
+   noise on every keystroke. */
+.surface :global(.ProseMirror:focus) {
+  outline: none;
+}
+
+.surface :global(.ProseMirror > * + *) {
+  margin-top: 0.85em;
+}
+
+.surface :global(.ProseMirror h1),
+.surface :global(.ProseMirror h2),
+.surface :global(.ProseMirror h3) {
+  line-height: 1.3;
+  margin-top: 1.5em;
+  margin-bottom: 0.1em;
+}
+
+.surface :global(.ProseMirror h1) {
+  font-size: 1.5rem;
+}
+.surface :global(.ProseMirror h2) {
+  font-size: 1.25rem;
+}
+.surface :global(.ProseMirror h3) {
+  font-size: 1.0625rem;
+}
+
+.surface :global(.ProseMirror ul),
+.surface :global(.ProseMirror ol) {
+  padding-left: 1.3em;
+}
+
+.surface :global(.ProseMirror li) {
+  margin: 0.2em 0;
+}
+
+.surface :global(.ProseMirror blockquote) {
+  margin-left: 0;
+  padding-left: 1em;
+  border-left: 2px solid var(--line-strong);
+  color: var(--slate);
+}
+
+.surface :global(.ProseMirror code) {
+  font-family: var(--mono);
+  font-size: 0.875em;
+  background: var(--surface-sunken);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+
+.surface :global(.ProseMirror pre) {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  background: var(--surface-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  overflow-x: auto;
+}
+
+.surface :global(.ProseMirror pre code) {
+  background: none;
+  padding: 0;
+}
+
+.surface :global(.ProseMirror hr) {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 1.6em 0;
+}
+
+/*
+ * The empty-document placeholder.
+ *
+ * CSS-only, keyed off ProseMirror's own "one empty paragraph" shape, rather
+ * than pulling in the Placeholder extension for a single line of text. An empty
+ * page should say what to do, not sit blank — the same rule the dashboard's
+ * empty panels follow.
+ *
+ * TWO selectors are needed and `:empty` alone is not enough: ProseMirror renders
+ * an empty paragraph as `<p><br class="ProseMirror-trailingBreak"></p>`, so the
+ * element HAS a child and `:empty` never matches. That is why the first version
+ * of this showed nothing at all.
+ */
+.surface :global(.ProseMirror > p:only-child:empty)::before,
+.surface :global(.ProseMirror > p:only-child:has(> br.ProseMirror-trailingBreak))::before {
+  content: "Start writing. Markdown works: # for a heading, - for a list.";
+  color: var(--slate-soft);
+  pointer-events: none;
+  float: left;
+  height: 0;
+}

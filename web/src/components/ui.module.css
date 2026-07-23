@@ -1,0 +1,367 @@
+/*
+ * The shared component layer.
+ *
+ * Deliberately small. Every class here earns its place; a page that needs
+ * something else should say so in its own file rather than growing this one
+ * into a framework.
+ */
+
+/* ------------------------------------------------------------ app frame -- */
+
+.app {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+@media (max-width: 860px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    display: none;
+  }
+}
+
+.sidebar {
+  border-right: 1px solid var(--line);
+  background: var(--surface-sunken);
+  padding: 22px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 6px;
+}
+
+.brandMark {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  color: var(--signal);
+}
+
+.brandName {
+  font-size: 0.9375rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+/* Centred single-purpose pages: sign-in, and anything else with one job. */
+.centred {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.main {
+  padding: 40px clamp(20px, 5vw, 56px) 96px;
+  max-width: 1080px;
+}
+
+/* -------------------------------------------------------------- type ---- */
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--slate-soft);
+}
+
+.lede {
+  color: var(--slate);
+  font-size: 0.9375rem;
+  max-width: 56ch;
+}
+
+.sectionTitle {
+  font-size: 0.875rem;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+}
+
+.muted {
+  color: var(--slate);
+  font-size: 0.875rem;
+}
+
+/* ------------------------------------------------------------ surfaces -- */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.cardLift {
+  box-shadow: var(--lift);
+}
+
+.panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+
+/* ------------------------------------------------------------- controls -- */
+
+.button,
+.buttonQuiet {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  font-size: 0.875rem;
+  font-weight: 550;
+  letter-spacing: -0.005em;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.button {
+  background: var(--ink);
+  color: var(--paper);
+  border: 1px solid var(--ink);
+}
+
+.button:hover:not(:disabled) {
+  background: #000;
+  border-color: #000;
+}
+
+@media (prefers-color-scheme: dark) {
+  .button:hover:not(:disabled) {
+    background: #fff;
+    border-color: #fff;
+  }
+}
+
+.buttonQuiet {
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+}
+
+.buttonQuiet:hover:not(:disabled) {
+  border-color: var(--slate-soft);
+}
+
+.button:disabled,
+.buttonQuiet:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.field {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9375rem;
+}
+
+.field::placeholder {
+  color: var(--slate-soft);
+}
+
+.field:focus {
+  outline: none;
+  border-color: var(--signal);
+  box-shadow: 0 0 0 3px var(--signal-wash);
+}
+
+.label {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 550;
+  color: var(--slate);
+  margin-bottom: 6px;
+}
+
+/* --------------------------------------------------------------- lists -- */
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: baseline;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.row:last-child {
+  border-bottom: 0;
+}
+
+.rowTitle {
+  font-size: 0.9375rem;
+  font-weight: 500;
+  text-decoration: none;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowTitle:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.rowMeta {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--slate-soft);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------- statistics -- */
+
+.statRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+  gap: 16px;
+}
+
+.statRow:last-child {
+  border-bottom: 0;
+}
+
+.statLabel {
+  font-size: 0.875rem;
+  color: var(--slate);
+}
+
+.statValue {
+  font-family: var(--mono);
+  font-size: 0.9375rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * A graph-derived number. Warm, because the system inferred it — see the note
+ * at the top of globals.css. Counts of pages are NOT this; counts of entities
+ * and connections are.
+ */
+.statValueDerived {
+  composes: statValue;
+  color: var(--signal);
+}
+
+/* -------------------------------------------------- THE SIGNATURE: trace --*/
+
+/*
+ * The provenance trace.
+ *
+ * This is the one element the product should be remembered by, and it is the
+ * only place the design gets to be loud. It draws HOW FAR a passage was from
+ * the question:
+ *
+ *     ●        matched your words
+ *     ◆─       one step away
+ *     ◆─◆      two steps away
+ *
+ * It is information, not ornament: no other note app can draw this, because no
+ * other note app knows the distance. A direct keyword match is rendered in the
+ * neutral ink; anything the graph walked to is warm.
+ */
+.trace {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.04em;
+  color: var(--slate-soft);
+  white-space: nowrap;
+}
+
+.traceGlyph {
+  letter-spacing: -0.05em;
+}
+
+.traceDerived {
+  composes: trace;
+  color: var(--signal);
+}
+
+.traceDerived .traceGlyph {
+  color: var(--signal);
+}
+
+/* --------------------------------------------------------------- states -- */
+
+.empty {
+  color: var(--slate);
+  font-size: 0.875rem;
+  padding: 6px 0 2px;
+  max-width: 48ch;
+}
+
+.error {
+  color: var(--danger);
+  background: var(--danger-wash);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 0.875rem;
+}
+
+.divider {
+  height: 1px;
+  background: var(--line);
+  border: 0;
+  margin: 28px 0;
+}
+
+/* --------------------------------------------------------------- tree ---- */
+
+.treeItem {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-size: 0.875rem;
+  color: var(--slate);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.treeItem:hover {
+  background: var(--surface);
+  color: var(--ink);
+}

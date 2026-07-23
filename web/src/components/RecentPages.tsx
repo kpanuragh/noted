@@ -5,7 +5,7 @@ import Link from "next/link";
 import { api } from "@/lib/api";
 import { usePanelData } from "@/lib/usePanelData";
 import { formatRelativeTime } from "@/lib/time";
-import styles from "./dashboard.module.css";
+import styles from "./ui.module.css";
 
 const DEFAULT_LIMIT = 8;
 
@@ -31,8 +31,8 @@ export function RecentPages({
   const { state, retry } = usePanelData(load);
 
   return (
-    <section className={styles.panel} aria-labelledby="recent-heading">
-      <h2 id="recent-heading" className={styles.panelTitle}>
+    <section className={styles.card} aria-labelledby="recent-heading">
+      <h2 id="recent-heading" className={styles.sectionTitle}>
         Recently edited
       </h2>
 
@@ -45,7 +45,7 @@ export function RecentPages({
             Couldn&apos;t load your recent pages. The workspace itself is fine — this
             panel just couldn&apos;t reach the server.
           </p>
-          <button type="button" className={styles.retry} onClick={retry}>
+          <button type="button" className={styles.buttonQuiet} onClick={retry}>
             Try again
           </button>
         </>
@@ -59,13 +59,13 @@ export function RecentPages({
       ) : (
         <ul className={styles.list}>
           {state.data.map((page) => (
-            <li key={page.id} className={styles.listItem}>
-              <Link href={`/pages/${page.id}`} className={styles.pageLink}>
-                <span className={styles.pageTitle}>{page.title || "Untitled"}</span>
-                <span className={styles.pageTime}>
-                  {formatRelativeTime(page.updated_at)}
-                </span>
+            <li key={page.id} className={styles.row}>
+              <Link href={`/pages/${page.id}`} className={styles.rowTitle}>
+                {page.title || "Untitled"}
               </Link>
+              <span className={styles.rowMeta}>
+                {formatRelativeTime(page.updated_at)}
+              </span>
             </li>
           ))}
         </ul>

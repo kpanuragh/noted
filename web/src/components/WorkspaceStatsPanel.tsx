@@ -4,7 +4,7 @@ import { useCallback } from "react";
 import { api, type WorkspaceStats } from "@/lib/api";
 import { usePanelData } from "@/lib/usePanelData";
 import { formatCount } from "@/lib/time";
-import styles from "./dashboard.module.css";
+import styles from "./ui.module.css";
 
 /**
  * The four workspace counters, told as a sentence rather than a debug dump.
@@ -21,8 +21,8 @@ export function WorkspaceStatsPanel({ workspaceId }: { workspaceId: string }) {
   const { state, retry } = usePanelData(load);
 
   return (
-    <section className={styles.panel} aria-labelledby="stats-heading">
-      <h2 id="stats-heading" className={styles.panelTitle}>
+    <section className={styles.card} aria-labelledby="stats-heading">
+      <h2 id="stats-heading" className={styles.sectionTitle}>
         Your knowledge base
       </h2>
 
@@ -32,7 +32,7 @@ export function WorkspaceStatsPanel({ workspaceId }: { workspaceId: string }) {
           <p className={styles.error} role="alert">
             Workspace insights are unavailable right now. Your pages are unaffected.
           </p>
-          <button type="button" className={styles.retry} onClick={retry}>
+          <button type="button" className={styles.buttonQuiet} onClick={retry}>
             Try again
           </button>
         </>
@@ -53,11 +53,11 @@ export function WorkspaceStatsPanel({ workspaceId }: { workspaceId: string }) {
           </div>
           <div className={styles.statRow}>
             <span className={styles.statLabel}>Things noted knows about</span>
-            <span className={styles.statValue}>{formatCount(state.data.entities)}</span>
+            <span className={styles.statValueDerived}>{formatCount(state.data.entities)}</span>
           </div>
           <div className={styles.statRow}>
             <span className={styles.statLabel}>Connections between them</span>
-            <span className={styles.statValue}>{formatCount(state.data.edges)}</span>
+            <span className={styles.statValueDerived}>{formatCount(state.data.edges)}</span>
           </div>
         </>
       )}
@@ -85,11 +85,11 @@ function StatsHeadline({ stats }: { stats: WorkspaceStats }) {
   }
 
   return (
-    <p className={styles.graphHeadline}>
+    <p className={styles.lede}>
       noted has found{" "}
-      <span className={styles.graphNumber}>{formatCount(stats.entities)}</span>{" "}
+      <span className={styles.statValueDerived}>{formatCount(stats.entities)}</span>{" "}
       {stats.entities === 1 ? "thing" : "things"} in your notes, linked by{" "}
-      <span className={styles.graphNumber}>{formatCount(stats.edges)}</span>{" "}
+      <span className={styles.statValueDerived}>{formatCount(stats.edges)}</span>{" "}
       {stats.edges === 1 ? "connection" : "connections"}.
     </p>
   );
