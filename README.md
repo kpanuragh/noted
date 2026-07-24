@@ -194,6 +194,40 @@ GEMINI_API_KEY=...                           # required by any gemini: spec
 NOTED_OLLAMA_URL=http://localhost:11434      # default
 ```
 
+### Local inference (Ollama)
+
+Two ways to get a local model, depending on whether you want it in Docker:
+
+```sh
+# A) Self-contained: run Ollama as a compose service and let it pull the model.
+docker compose --profile local-llm up -d
+# then point the API at it (in .env):
+NOTED_OLLAMA_URL=http://ollama:11434
+
+# B) Host Ollama (must listen on all interfaces so the API container can reach it):
+OLLAMA_HOST=0.0.0.0 ollama serve
+NOTED_OLLAMA_URL=http://host.docker.internal:11434   # the compose default
+```
+
+**Make host Ollama durable.** Started by hand it dies on reboot and extraction
+silently stalls. Run it as a service instead — e.g. a systemd user unit:
+
+```ini
+# ~/.config/systemd/user/ollama.service
+[Service]
+Environment=OLLAMA_HOST=0.0.0.0
+ExecStart=/usr/bin/ollama serve
+Restart=always
+[Install]
+WantedBy=default.target
+```
+```sh
+systemctl --user enable --now ollama
+```
+
+The compose services (`postgres`, `api`, `web`, and the optional `ollama`) all
+carry `restart: unless-stopped`, so they come back after a reboot on their own.
+
 A malformed spec is **fatal at startup** rather than falling back to a stub. An operator who
 asked for a real model and mistyped the key has said clearly what they want; quietly serving
 stub prose would look like a working deployment while producing answers nobody could tell

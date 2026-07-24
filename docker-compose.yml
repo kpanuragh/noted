@@ -3,6 +3,9 @@
 services:
   postgres:
     image: pgvector/pgvector:0.8.5-pg17-trixie
+    # Survive a host reboot or a daemon restart. Without this the whole stack
+    # went down mid-session and stayed down until started by hand.
+    restart: unless-stopped
     environment:
       POSTGRES_USER: noted
       POSTGRES_PASSWORD: noted
@@ -25,6 +28,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    restart: unless-stopped
     depends_on:
       postgres:
         # `service_healthy`, not `service_started`: the server runs migrations
@@ -79,6 +83,7 @@ services:
       - noted_models:/home/noted/.fastembed_cache
 
   web:
+    restart: unless-stopped
     build:
       context: ./web
       dockerfile: Dockerfile
@@ -94,6 +99,38 @@ services:
     ports:
       - "3000:3000"
 
+  # Optional local inference, so a fresh `docker compose --profile local-llm up`
+  # is fully self-contained — no Ollama on the host. Off by default because it
+  # is CPU-only here and pulls a ~1.3GB model; a deployment with a host Ollama
+  # (or Gemini) does not want a second copy. When on, point the api at it with
+  # NOTED_OLLAMA_URL=http://ollama:11434 in `.env`.
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local-llm"]
+    restart: unless-stopped
+    volumes:
+      - noted_ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # One-shot: pull the extraction model once the server is up, then exit. A
+  # separate service rather than an entrypoint hack so `ollama serve` stays the
+  # image's own supervised process and the pull's success/failure is visible.
+  ollama-pull:
+    image: ollama/ollama:latest
+    profiles: ["local-llm"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama", "pull", "${NOTED_OLLAMA_MODEL:-llama3.2:1b}"]
+    restart: "no"
+
 volumes:
   noted_pgdata:
   noted_models:
+  noted_ollama:
