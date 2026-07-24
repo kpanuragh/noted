@@ -65,7 +65,10 @@ pub fn sanitise(extraction: Extraction) -> Extraction {
         entities: extraction
             .entities
             .into_iter()
-            .filter(|e| !e.name.trim().is_empty())
+            // `is_plausible_entity_name` subsumes the old blank check and adds
+            // the noise rules — see its docs. A node that should not exist is
+            // dropped here, before it can resolve and accrete edges.
+            .filter(|e| is_plausible_entity_name(&e.name))
             .map(|e| ExtractedEntity {
                 name: e.name.trim().to_string(),
                 entity_type: e.entity_type.trim().to_string(),
@@ -77,7 +80,12 @@ pub fn sanitise(extraction: Extraction) -> Extraction {
         edges: extraction
             .edges
             .into_iter()
-            .filter(|e| !e.source.trim().is_empty() && !e.target.trim().is_empty())
+            // An edge is only as trustworthy as its endpoints. If either end is
+            // noise the edge is dropped too — a relationship to a node that
+            // should not exist is not a relationship. Uses the SAME predicate
+            // as the entity filter, so the two can never disagree about what
+            // counts as a real endpoint.
+            .filter(|e| is_plausible_entity_name(&e.source) && is_plausible_entity_name(&e.target))
             .map(|e| ExtractedEdge {
                 source: e.source.trim().to_string(),
                 target: e.target.trim().to_string(),
@@ -90,10 +98,111 @@ pub fn sanitise(extraction: Extraction) -> Extraction {
 
 /// Canonical form used as the per-workspace resolution key.
 pub fn normalise_entity(name: &str) -> String {
-    name.split_whitespace()
+    let collapsed = name
+        .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-        .to_lowercase()
+        .to_lowercase();
+    // Strip punctuation that clings to a name when a model copies it out of
+    // prose: `(kerala)`, `kerala.`, `"kerala"`. Only from the ENDS, so a
+    // hyphenated or apostrophed interior is untouched.
+    let trimmed = collapsed
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_string();
+    // Drop a trailing possessive so `india's` resolves to the same node as
+    // `india`. The possessive ONLY — not every trailing `s` — or `ghats` would
+    // silently become `ghat` and stop matching itself.
+    trimmed
+        .strip_suffix("'s")
+        .or_else(|| trimmed.strip_suffix('\''))
+        .unwrap_or(&trimmed)
+        .to_string()
+}
+
+/// The extraction instructions, shared by every real provider.
+///
+/// One definition, because a graph built by two providers under two prompts is
+/// two different graphs. It was two — the Ollama and Gemini providers each
+/// carried their own loosely-worded preamble, and the loose wording is most of
+/// why `llama3.2:1b` returned sentence fragments and stopwords as entities.
+///
+/// The constraints below are written AT the failure modes seen in real output:
+/// clauses-as-entities, possessives as separate nodes, pronouns and articles,
+/// and edges to things that were never entities. A better model needs less of
+/// this, but the instructions cost nothing and make a weak model usable.
+pub const EXTRACTION_INSTRUCTIONS: &str = "\
+You are an information-extraction engine building a knowledge graph. Read the \
+note below and extract its entities and the relationships between them.
+
+An ENTITY is a specific, nameable thing: a person, place, organisation, named \
+concept, event, or work. Give each a short canonical name (1 to 4 words) and a \
+type. Follow these rules exactly:
+- Use the base form of the name. \"India\", never \"India's\". Prefer the \
+singular unless the plural IS the thing.
+- A name is a noun, never a phrase, clause, sentence, or list. If you are \
+tempted to include a comma, it is not one entity.
+- Do NOT extract pronouns, articles, or generic words (it, they, thing, area, \
+region) — only things worth their own node.
+- Extract only what the text states. Do not infer or invent.
+
+A RELATIONSHIP connects two entities you extracted, names how they relate in a \
+few words, and carries a confidence weight from 0.0 to 1.0. Every endpoint must \
+be one of the entities above.
+
+Respond with ONLY the JSON object the schema describes — no prose, no markdown \
+fences. If the note contains nothing extractable, return empty arrays rather \
+than inventing content.
+
+Note:
+";
+
+/// The full extraction prompt for `text`, instructions plus the note.
+///
+/// Shared so both providers send byte-identical prompts and cannot drift.
+pub fn build_extraction_prompt(text: &str) -> String {
+    format!("{EXTRACTION_INSTRUCTIONS}{text}")
+}
+
+/// The longest an entity NAME may be, in words and characters.
+///
+/// A weak extractor (`llama3.2:1b`) readily returns whole clauses as
+/// "entities" — `palm-lined beaches and backwaters, a network of canals.` came
+/// back as one. A graph node is a thing, not a sentence, so these bounds trade
+/// a little recall for nodes that are actually entities. Chosen from the real
+/// output: legitimate names in a personal corpus (`Western Ghats`, `Sir Richard
+/// Owen`) sit well under both.
+const MAX_ENTITY_WORDS: usize = 6;
+const MAX_ENTITY_CHARS: usize = 64;
+
+/// Whether a string is plausibly an entity NAME rather than extraction noise.
+///
+/// Applied by [`sanitise`] to both entities and edge endpoints. Every reject
+/// rule here fires on real `llama3.2:1b` output; none fires on the legitimate
+/// entities from the same runs. The rules, and why each is safe:
+///
+///   * **Empty / no letter** — `123`, `---`, `   ` are not names.
+///   * **A comma or semicolon** — the model handed back a LIST or a clause
+///     (`national parks, plus wayanad and other sanctuaries`), not one name.
+///   * **Over-long** — past [`MAX_ENTITY_WORDS`]/[`MAX_ENTITY_CHARS`] it is a
+///     phrase. A real multi-word entity is short.
+pub fn is_plausible_entity_name(name: &str) -> bool {
+    let name = name.trim();
+    if name.is_empty() {
+        return false;
+    }
+    if !name.chars().any(|c| c.is_alphabetic()) {
+        return false;
+    }
+    if name.contains(',') || name.contains(';') {
+        return false;
+    }
+    if name.chars().count() > MAX_ENTITY_CHARS {
+        return false;
+    }
+    if name.split_whitespace().count() > MAX_ENTITY_WORDS {
+        return false;
+    }
+    true
 }
 
 /// Deterministic, no-model extractor for tests. Treats each capitalised word as

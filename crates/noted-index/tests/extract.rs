@@ -93,3 +93,111 @@ fn sanitise_drops_blank_names_before_they_become_a_false_hub() {
     assert_eq!(out.edges[0].target, "Arun");
     assert_eq!(out.edges[0].relation, "reports to");
 }
+
+// -------------------------------------------------------- entity quality --
+//
+// These pin the noise filter and normalisation that a weak extraction model
+// (llama3.2:1b) makes necessary. Every example below is a REAL entity the 1b
+// model produced from a two-paragraph note about Kerala and dinosaurs.
+
+use noted_index::extract::is_plausible_entity_name;
+
+#[test]
+fn a_sentence_fragment_is_not_an_entity() {
+    // The model returned these verbatim as "entities". A knowledge graph node
+    // is a thing, not a clause.
+    assert!(!is_plausible_entity_name(
+        "palm-lined beaches and backwaters, a network of canals."
+    ));
+    assert!(!is_plausible_entity_name(
+        "national parks, plus wayanad and other sanctuaries"
+    ));
+    // A comma or semicolon means the model handed back a list, not a name.
+    assert!(!is_plausible_entity_name("apples, oranges"));
+}
+
+#[test]
+fn an_over_long_phrase_is_not_an_entity() {
+    // No entity name is a seven-word phrase. Bounds recall slightly in exchange
+    // for a graph whose nodes are actually entities.
+    assert!(!is_plausible_entity_name("the quick brown fox jumped over something"));
+}
+
+#[test]
+fn punctuation_or_number_only_is_not_an_entity() {
+    assert!(!is_plausible_entity_name("123"));
+    assert!(!is_plausible_entity_name("---"));
+    assert!(!is_plausible_entity_name("   "));
+}
+
+#[test]
+fn real_multiword_entities_are_kept() {
+    // The filter must not be so aggressive it eats legitimate names.
+    for good in [
+        "Western Ghats",
+        "Sir Richard Owen",
+        "great fossil lizards",
+        "Kerala",
+        "U.S.A.",
+        "dinosaurs",
+    ] {
+        assert!(is_plausible_entity_name(good), "wrongly rejected: {good}");
+    }
+}
+
+#[test]
+fn normalise_strips_a_possessive_so_the_forms_merge() {
+    // "India" and "India's" are the same entity; the graph should hold one node.
+    assert_eq!(normalise_entity("India's"), normalise_entity("India"));
+    assert_eq!(normalise_entity("India's"), "india");
+    // But a plain trailing s is NOT a possessive and must be left alone, or
+    // "Ghats" would silently become "ghat".
+    assert_eq!(normalise_entity("Ghats"), "ghats");
+}
+
+#[test]
+fn normalise_strips_clinging_punctuation() {
+    // Punctuation a model copies out of prose alongside the word.
+    assert_eq!(normalise_entity("(Kerala)"), "kerala");
+    assert_eq!(normalise_entity("Kerala."), "kerala");
+    assert_eq!(normalise_entity("\"Kerala\""), "kerala");
+    // ...without disturbing the case+whitespace collapse it always did.
+    assert_eq!(normalise_entity("  Western   GHATS  "), "western ghats");
+}
+
+#[test]
+fn sanitise_drops_noise_entities_and_edges_that_reference_them() {
+    use noted_index::extract::{sanitise, ExtractedEdge, ExtractedEntity, Extraction};
+
+    let out = sanitise(Extraction {
+        entities: vec![
+            ExtractedEntity { name: "Kerala".into(), entity_type: "place".into(), description: None },
+            ExtractedEntity {
+                name: "palm-lined beaches and backwaters, a network of canals.".into(),
+                entity_type: "concept".into(),
+                description: None,
+            },
+        ],
+        edges: vec![
+            // An edge to the noise entity must go too — a node that should not
+            // exist cannot have real relationships.
+            ExtractedEdge {
+                source: "Kerala".into(),
+                target: "palm-lined beaches and backwaters, a network of canals.".into(),
+                relation: "has".into(),
+                weight: 0.5,
+            },
+            ExtractedEdge {
+                source: "Kerala".into(),
+                target: "Western Ghats".into(),
+                relation: "borders".into(),
+                weight: 0.9,
+            },
+        ],
+    });
+
+    let names: Vec<&str> = out.entities.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, vec!["Kerala"], "the sentence-fragment entity survived");
+    assert_eq!(out.edges.len(), 1, "the edge to the noise entity survived");
+    assert_eq!(out.edges[0].target, "Western Ghats");
+}

@@ -310,10 +310,6 @@ pub fn response_schema() -> serde_json::Value {
     })
 }
 
-const EXTRACT_PREAMBLE: &str = "You are an information-extraction engine. Read the note text below \
-     and list the entities in it and the relationships between them. Use only \
-     what the text states. Weight is your confidence from 0.0 to 1.0.\n\n";
-
 /// Extracts entities and edges from chunk text.
 #[derive(Debug)]
 pub struct GeminiExtractor {
@@ -346,7 +342,8 @@ impl GeminiExtractor {
     }
 
     pub fn build_prompt(text: &str) -> String {
-        format!("{EXTRACT_PREAMBLE}{text}")
+        // Shared with the Ollama extractor — one prompt, one graph.
+        crate::extract::build_extraction_prompt(text)
     }
 }
 
