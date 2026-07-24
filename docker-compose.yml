@@ -11,6 +11,10 @@ services:
       - "5433:5432"
     volumes:
       - noted_pgdata:/var/lib/postgresql/data
+      # Creates `noted_test` on first init so `cargo test` never touches the
+      # application database. Only runs on a FRESH volume — an existing
+      # deployment makes it by hand: `docker compose exec postgres createdb -U noted noted_test`.
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U noted -d noted"]
       interval: 5s

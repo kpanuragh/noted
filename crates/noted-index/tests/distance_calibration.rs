@@ -15,8 +15,8 @@ use noted_index::provider::{EmbeddingProvider, FastEmbed};
 #[tokio::test]
 #[ignore = "needs a populated database and loads the embedding model"]
 async fn measure_distances_for_related_and_unrelated_queries() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
+    let url = std::env::var("TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted_test".into());
     let pool = noted_db::connect(&url).await.unwrap();
     let embedder = FastEmbed::new().unwrap();
 
@@ -86,8 +86,8 @@ async fn measure_distances_for_related_and_unrelated_queries() {
 #[tokio::test]
 #[ignore = "operator tool: embeds a named workspace's summaries"]
 async fn embed_summaries_for_one_workspace() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
+    let url = std::env::var("TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted_test".into());
     let pool = noted_db::connect(&url).await.unwrap();
     let ws: uuid::Uuid = std::env::var("EMBED_SUMMARIES_WORKSPACE")
         .expect("set EMBED_SUMMARIES_WORKSPACE=<uuid>")

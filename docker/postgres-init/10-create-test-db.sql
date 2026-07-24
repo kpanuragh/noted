@@ -1,0 +1,13 @@
+-- Runs ONCE, on a fresh data volume, via the postgres image's
+-- /docker-entrypoint-initdb.d hook.
+--
+-- The test suite connects to `noted_test`, never `noted`, so `cargo test`
+-- cannot touch application data. Before this existed the tests defaulted to
+-- the application database and hammered it: 52 test files, ~1800 stray
+-- workspaces, a summary queue polluted by a backdated fixture, and
+-- intermittent failures whenever two test binaries raced on the same rows.
+--
+-- Kept empty of schema on purpose. Each test's setup calls `noted_db::migrate`,
+-- which is idempotent, so the first test run builds the schema here. Seeding it
+-- from the migrations would just be a second copy to keep in step.
+CREATE DATABASE noted_test;

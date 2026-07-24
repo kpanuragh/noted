@@ -4,8 +4,8 @@ use noted_server::routes::health::{MIN_PGVECTOR, parse_version};
 use tower::ServiceExt;
 
 async fn test_app() -> axum::Router {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
+    let url = std::env::var("TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted_test".into());
     let pool = noted_db::connect(&url).await.unwrap();
     noted_db::migrate(&pool).await.unwrap();
     noted_server::app(noted_server::AppState::new_for_test(pool))

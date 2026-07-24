@@ -2,8 +2,8 @@ use sqlx::{Row, postgres::PgPoolOptions};
 
 #[tokio::test]
 async fn pgvector_extension_is_at_least_0_8() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
+    let url = std::env::var("TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted_test".into());
     let pool = PgPoolOptions::new()
         .connect(&url)
         .await

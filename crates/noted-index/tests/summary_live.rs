@@ -10,8 +10,8 @@ use std::sync::Arc;
 #[tokio::test]
 #[ignore = "needs a populated database and a running Ollama"]
 async fn who_is_at_the_head_of_the_summary_queue() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
+    let url = std::env::var("TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted_test".into());
     let pool = noted_db::connect(&url).await.unwrap();
     let model_id = "ollama:llama3.2:1b";
 
@@ -69,8 +69,8 @@ async fn who_is_at_the_head_of_the_summary_queue() {
 #[tokio::test]
 #[ignore = "operator tool: summarises a named workspace with a real model"]
 async fn summarise_one_workspace_now() {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
+    let url = std::env::var("TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted_test".into());
     let pool = noted_db::connect(&url).await.unwrap();
     let ws: uuid::Uuid = std::env::var("SUMMARISE_WORKSPACE")
         .expect("set SUMMARISE_WORKSPACE=<uuid>")

@@ -223,7 +223,7 @@ If you write a provider:
 ## Development
 
 ```bash
-cargo test --workspace -- --test-threads=1   # needs Postgres up
+cargo test --workspace          # needs Postgres up
 cargo check --workspace --all-targets
 
 cd web
@@ -232,9 +232,22 @@ npx tsc --noEmit
 npx playwright test   # some specs need the API on :8787
 ```
 
-Tests run against a real Postgres, not a mock. Scope every fixture to its own workspace —
-the suite shares a database, and an instance-wide assertion will pass until someone else's
-fixture makes it fail.
+Tests run against a real Postgres, not a mock — but a SEPARATE database, `noted_test`,
+never the application's `noted`. `docker compose up` creates it on a fresh volume; an
+existing deployment makes it once by hand:
+
+```bash
+docker compose exec postgres createdb -U noted noted_test
+```
+
+Point tests elsewhere with `TEST_DATABASE_URL` (they never read `DATABASE_URL`, so an
+exported production URL cannot leak into a test run). The schema builds itself: every
+fixture's setup calls the idempotent `migrate`.
+
+Even isolated, scope every fixture to its own workspace. The database is shared BETWEEN
+test binaries running in parallel, so an instance-wide assertion (`... LIMIT 1`, a global
+`COUNT`) will pass alone and fail in the full suite when another binary's fixture is
+present. That is a property of the query, not of which database it runs against.
 
 A few conventions this codebase holds to, learned the hard way:
 
