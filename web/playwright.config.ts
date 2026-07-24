@@ -32,4 +32,18 @@ export default defineConfig({
     url: "http://localhost:3000",
     reuseExistingServer: true,
   },
+  projects: [
+    // Signs up a test user and saves the session. Runs first; the main project
+    // depends on it. Kept out of the main project's glob so its "test" does not
+    // count as a spec.
+    { name: "setup", testMatch: /auth\.setup\.ts/ },
+    {
+      name: "chromium",
+      testIgnore: /auth\.setup\.ts/,
+      // Every spec runs authenticated. The stubbed dashboard specs ignore the
+      // cookie (they intercept the routes); the integration specs need it.
+      use: { storageState: "e2e/.auth/user.json" },
+      dependencies: ["setup"],
+    },
+  ],
 });
