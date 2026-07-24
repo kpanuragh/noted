@@ -101,3 +101,41 @@ async fn summarise_one_workspace_now() {
     }
     assert!(!rows.is_empty(), "no summary was written");
 }
+
+/// Extract ONE workspace's pending chunks now, past the instance-wide queue.
+///
+/// The background extractor drains a global FIFO queue, so a real workspace's
+/// chunks can sit behind thousands of unrelated ones — on this shared dev
+/// database, ~8800 test-pollution chunks. This scopes the worker to a single
+/// workspace and drains just its chunks.
+///
+/// ```text
+/// EXTRACT_WORKSPACE=<uuid> cargo test -p noted-index --features extract-ollama \
+///   --test summary_live extract_one_workspace_now -- --ignored --nocapture
+/// ```
+#[tokio::test]
+#[ignore = "operator tool: extracts a named workspace with a real model"]
+async fn extract_one_workspace_now() {
+    let url = std::env::var("TEST_DATABASE_URL")
+        .or_else(|_| std::env::var("EXTRACT_DATABASE_URL"))
+        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
+    let pool = noted_db::connect(&url).await.unwrap();
+    let ws: uuid::Uuid = std::env::var("EXTRACT_WORKSPACE")
+        .expect("set EXTRACT_WORKSPACE=<uuid>")
+        .parse()
+        .unwrap();
+    let model = std::env::var("EXTRACT_MODEL").unwrap_or_else(|_| "llama3.2:1b".into());
+    let base = std::env::var("NOTED_OLLAMA_URL")
+        .unwrap_or_else(|_| "http://localhost:11434".into());
+
+    let provider = Arc::new(
+        noted_index::extract_providers::OllamaExtractor::new(base, model),
+    );
+    let worker = noted_index::extract_worker::ExtractWorker::new_scoped(
+        pool.clone(),
+        provider,
+        ws,
+    );
+    let n = worker.drain().await.expect("drain");
+    println!("extracted {n} chunks for {ws}");
+}
