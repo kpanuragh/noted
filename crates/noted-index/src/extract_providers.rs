@@ -146,12 +146,6 @@ fn response_schema() -> serde_json::Value {
     })
 }
 
-const PROMPT_PREAMBLE: &str = "You are an information-extraction engine. Read the note text below \
-and extract the entities it mentions (people, places, concepts, organisations — anything worth a \
-graph node) and the relations between them. Respond with ONLY the JSON object described by the \
-schema: no prose, no markdown fences. If the text mentions nothing extractable, return empty \
-\"entities\" and \"edges\" arrays rather than inventing content.\n\nText:\n";
-
 #[derive(Serialize)]
 struct GenerateRequest<'a> {
     model: &'a str,
@@ -196,7 +190,7 @@ struct EdgeWire {
 fn build_request<'a>(model: &'a str, text: &str) -> GenerateRequest<'a> {
     GenerateRequest {
         model,
-        prompt: format!("{PROMPT_PREAMBLE}{text}"),
+        prompt: crate::extract::build_extraction_prompt(text),
         format: response_schema(),
         stream: false,
     }
