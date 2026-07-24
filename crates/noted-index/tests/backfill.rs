@@ -16,8 +16,8 @@
 /// materialise the chunks the code under test is supposed to materialise, and the
 /// test would pass against a CLI that never backfills anything.
 async fn m1a_instance(pages: usize) -> (noted_db::PgPool, Vec<uuid::Uuid>, String) {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
+    let url = std::env::var("TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted_test".into());
     let pool = noted_db::connect(&url).await.unwrap();
     noted_db::migrate(&pool).await.unwrap();
 

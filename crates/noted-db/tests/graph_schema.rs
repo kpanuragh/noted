@@ -1,6 +1,6 @@
 async fn pool() -> noted_db::PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
+    let url = std::env::var("TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted_test".into());
     let p = noted_db::connect(&url).await.unwrap();
     noted_db::migrate(&p).await.unwrap();
     p

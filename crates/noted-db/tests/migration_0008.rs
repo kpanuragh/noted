@@ -66,8 +66,8 @@ CREATE TABLE chunk_extractions (
 "#;
 
 async fn conn() -> sqlx::PgConnection {
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
+    let url = std::env::var("TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted_test".into());
     sqlx::PgConnection::connect(&url).await.unwrap()
 }
 
