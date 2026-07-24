@@ -16,3 +16,7 @@ node_modules/
 .env
 .env.local
 .env.*.local
+
+
+# Playwright saved auth session (per-run test user)
+web/e2e/.auth/

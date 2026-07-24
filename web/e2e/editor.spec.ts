@@ -1,11 +1,12 @@
 import { test, expect } from "@playwright/test";
+import { testWorkspaceId } from "./helpers";
 
 // This is the M1a acceptance test: type, reload, content survives.
 // It exercises Tiptap -> Yjs -> WebSocket -> yrs -> Postgres and back.
 test("typed content persists across a reload", async ({ page, request }) => {
   const created = await request.post("http://localhost:8787/api/pages", {
     data: {
-      workspace_id: process.env.NEXT_PUBLIC_WORKSPACE_ID,
+      workspace_id: testWorkspaceId(),
       title: "Persistence test",
     },
   });

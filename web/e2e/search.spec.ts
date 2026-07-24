@@ -1,8 +1,9 @@
 import { test, expect } from "@playwright/test";
+import { testWorkspaceId } from "./helpers";
 
 // The acceptance test for M1c: a user can find a page by typing part of its name.
 test("quick find navigates to a page by title", async ({ page, request }) => {
-  const ws = process.env.NEXT_PUBLIC_WORKSPACE_ID!;
+  const ws = testWorkspaceId();
   const title = `Findable ${Date.now()}`;
   await request.post("http://localhost:8787/api/pages", {
     data: { workspace_id: ws, title },
@@ -11,8 +12,14 @@ test("quick find navigates to a page by title", async ({ page, request }) => {
   await page.goto("/");
   await page.keyboard.press("Control+k");
   await page.getByPlaceholder(/search/i).fill(title.slice(0, 8));
-  await expect(page.getByText(title)).toBeVisible();
-  await page.getByText(title).click();
+
+  // Scope to the Quick find dialog. As an authenticated user the sidebar also
+  // lists the page, so an unscoped getByText matches twice and trips strict
+  // mode — the same collision the dashboard integration test documents. The
+  // dialog is what this test is actually about.
+  const dialog = page.getByRole("dialog", { name: "Quick find" });
+  await expect(dialog.getByText(title)).toBeVisible();
+  await dialog.getByText(title).click();
   await expect(page.locator(".ProseMirror")).toBeVisible();
 });
 
@@ -28,7 +35,7 @@ test("quick find navigates to a page by title", async ({ page, request }) => {
 // (finding content with no verbatim overlap) is exercised by the Rust
 // `hybrid` tests in crates/noted-db, not here.
 test("hybrid search finds a page by body content and opens it", async ({ page, request }) => {
-  const ws = process.env.NEXT_PUBLIC_WORKSPACE_ID!;
+  const ws = testWorkspaceId();
   const title = `Untitled ${Date.now()}`;
   const phrase = `zephyroquartz${Date.now()}`;
   const created = await request.post("http://localhost:8787/api/pages", {
