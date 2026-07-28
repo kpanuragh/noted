@@ -92,9 +92,16 @@
 /* ------------------------------------------------------------- the prose -- */
 
 .surface :global(.ProseMirror) {
-  /* Tall enough to read as "a page", so an empty document still looks like
-     somewhere to write rather than a collapsed strip. */
-  min-height: 58vh;
+  /* A short note should be short. This used to carry an unconditional
+     `min-height: 58vh`, which is right for an EMPTY note — it needs to look
+     like somewhere to write rather than a collapsed strip — but on a note of
+     three paragraphs it added several hundred pixels of dead space and pushed
+     everything after it, Similar notes included, below the fold. Twice that
+     was reported as the section being missing when it was merely off-screen.
+
+     A small floor keeps a nearly-empty note from collapsing; the tall one is
+     applied below, only when the document really is empty. */
+  min-height: 10rem;
   padding: 22px 24px 40px;
   /* A comfortable measure. Full-bleed text across a 1280px window is
      unreadable, and this is the one surface where reading matters most. */
@@ -175,6 +182,15 @@
   border: 0;
   border-top: 1px solid var(--line);
   margin: 1.6em 0;
+}
+
+/* The tall surface, applied ONLY to a genuinely empty document — the same two
+   selectors the placeholder uses, and for the same reason: ProseMirror renders
+   an empty paragraph as `<p><br class="ProseMirror-trailingBreak"></p>`, so it
+   HAS a child and `:empty` alone never matches. */
+.surface :global(.ProseMirror:has(> p:only-child:empty)),
+.surface :global(.ProseMirror:has(> p:only-child > br.ProseMirror-trailingBreak)) {
+  min-height: 58vh;
 }
 
 /*
