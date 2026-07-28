@@ -302,3 +302,74 @@
   display: block;
   margin: 1em 0;
 }
+
+/* Callout: an aside that should catch the eye without shouting. Warm, because
+   the writer marked it as worth noticing — the accent's other sanctioned use. */
+.surface :global(.ProseMirror div[data-type="callout"]) {
+  border-left: 3px solid var(--signal);
+  background: var(--signal-wash);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin: 1em 0;
+}
+
+.surface :global(.ProseMirror div[data-type="callout"] > *:first-child) {
+  margin-top: 0;
+}
+
+/* Toggle: native details/summary, so it opens and closes without JavaScript. */
+.surface :global(.ProseMirror details) {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin: 1em 0;
+}
+
+.surface :global(.ProseMirror details > summary) {
+  cursor: pointer;
+  font-weight: 550;
+  /* The default marker sits oddly against the editor's type; a rotating
+     triangle reads as a control the writer owns. */
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.surface :global(.ProseMirror details > summary::-webkit-details-marker) {
+  display: none;
+}
+
+.surface :global(.ProseMirror details > summary::before) {
+  content: "▸";
+  color: var(--slate);
+  font-size: 0.75rem;
+  transition: transform 0.15s ease;
+}
+
+.surface :global(.ProseMirror details[open] > summary::before) {
+  transform: rotate(90deg);
+}
+
+.surface :global(.ProseMirror div[data-type="toggle-body"]) {
+  padding-top: 6px;
+}
+
+.surface :global(.ProseMirror div[data-type="toggle-body"] > *:first-child) {
+  margin-top: 0;
+}
+
+/* Embedded video keeps its aspect ratio rather than being letterboxed by a
+   fixed height. */
+.surface :global(.ProseMirror div[data-youtube-video]) {
+  margin: 1em 0;
+}
+
+.surface :global(.ProseMirror div[data-youtube-video] iframe) {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  height: auto;
+  border: 0;
+  border-radius: var(--radius-sm);
+  display: block;
+}

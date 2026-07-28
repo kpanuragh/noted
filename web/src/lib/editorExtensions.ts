@@ -3,6 +3,8 @@ import Link from "@tiptap/extension-link";
 import Image from "@tiptap/extension-image";
 import { TableKit } from "@tiptap/extension-table";
 import { TaskList, TaskItem } from "@tiptap/extension-list";
+import Youtube from "@tiptap/extension-youtube";
+import { Callout, ToggleBlock, ToggleSummary, ToggleBody } from "@/lib/blocks";
 import { SlashCommand } from "@/lib/slashCommand";
 
 /**
@@ -92,6 +94,12 @@ export function editorExtensions() {
     TaskList,
     TaskItem.configure({ nested: true }),
     Image.configure({ inline: false }),
+    Youtube.configure({ controls: true, nocookie: true }),
+    // Ours — see blocks.ts. Tiptap's toggle is behind a paid plan.
+    Callout,
+    ToggleBlock,
+    ToggleSummary,
+    ToggleBody,
     CleanLink.configure({
       openOnClick: false,
       autolink: true,

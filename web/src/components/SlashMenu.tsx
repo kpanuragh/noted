@@ -97,6 +97,31 @@ export const SLASH_ITEMS: SlashItem[] = [
     },
   },
   {
+    title: "Callout",
+    hint: "Set information apart",
+    glyph: "▲",
+    keywords: ["callout", "note", "aside", "info", "warning", "tip"],
+    run: (e, r) => e.chain().focus().deleteRange(r).setCallout().run(),
+  },
+  {
+    title: "Toggle",
+    hint: "Collapsible section",
+    glyph: "▸",
+    keywords: ["toggle", "collapse", "details", "expand", "accordion"],
+    run: (e, r) => e.chain().focus().deleteRange(r).setToggleBlock().run(),
+  },
+  {
+    title: "Video",
+    hint: "Embed a YouTube video",
+    glyph: "▶",
+    keywords: ["video", "youtube", "embed", "clip"],
+    run: (e, r) => {
+      const src = window.prompt("YouTube URL");
+      if (!src || !src.trim()) return;
+      e.chain().focus().deleteRange(r).setYoutubeVideo({ src: src.trim() }).run();
+    },
+  },
+  {
     title: "Quote",
     hint: "Set text apart",
     glyph: "❝",
