@@ -2,30 +2,29 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { EditorContent, useEditor, type Editor as TiptapEditor } from "@tiptap/react";
+import { BubbleMenu } from "@tiptap/react/menus";
 import Collaboration from "@tiptap/extension-collaboration";
 import * as Y from "yjs";
 import { createProvider } from "@/lib/provider";
 import { editorExtensions } from "@/lib/editorExtensions";
+import { isSafeHref } from "@/lib/editorExtensions";
 import s from "./editor.module.css";
 
 /**
- * A formatting control.
+ * A formatting control in the selection menu.
  *
- * `isActive` is read from the editor rather than tracked separately, so the
- * toolbar can never disagree with the document about whether the cursor is in a
- * heading — a toolbar that lies is worse than no toolbar.
+ * `active` is read from the editor rather than tracked separately, so the menu
+ * can never disagree with the document about whether the selection is bold.
  */
 function Tool({
-  editor,
   label,
   title,
   active,
   onClick,
 }: {
-  editor: TiptapEditor;
-  label: string;
+  label: React.ReactNode;
   title: string;
-  active: boolean;
+  active?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -33,14 +32,12 @@ function Tool({
       type="button"
       title={title}
       aria-label={title}
-      aria-pressed={active}
+      aria-pressed={active ?? false}
       className={active ? s.toolActive : s.tool}
-      // `onMouseDown` prevented: clicking a toolbar button must not steal focus
-      // from the document, or the command applies to a collapsed selection
-      // somewhere the user is not looking.
+      // Prevented so pressing a control does not collapse the selection it is
+      // about to act on — the whole menu depends on the selection surviving.
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
-      disabled={!editor.isEditable}
     >
       {label}
     </button>
@@ -49,13 +46,6 @@ function Tool({
 
 export function Editor({ pageId }: { pageId: string }) {
   const doc = useMemo(() => new Y.Doc(), [pageId]);
-
-  // A page opens as a clean rendered document and becomes an editor when the
-  // reader clicks into it. `editing` is the FOCUS state, not a separate mode
-  // the user has to toggle: the editor is always editable underneath (so a
-  // click lands the caret and typing just works), and only the chrome — the
-  // toolbar and the surface's frame — follows focus. Click away and it reads
-  // as a finished document again.
   const [editing, setEditing] = useState(false);
 
   useEffect(() => {
@@ -72,79 +62,114 @@ export function Editor({ pageId }: { pageId: string }) {
         Collaboration.configure({ document: doc, field: "prosemirror" }),
       ],
       onFocus: () => setEditing(true),
-      // Toolbar buttons preventDefault their mousedown, so using one does NOT
-      // blur the document — the view stays focused and the toolbar stays up.
-      // Blur therefore means the reader genuinely clicked away.
       onBlur: () => setEditing(false),
     },
     [doc],
   );
 
+  function setLink(ed: TiptapEditor) {
+    const current = (ed.getAttributes("link").href as string | undefined) ?? "";
+    const url = window.prompt("Link URL", current);
+    if (url === null) return; // cancelled
+    if (url.trim() === "") {
+      ed.chain().focus().extendMarkRange("link").unsetLink().run();
+      return;
+    }
+    // The same allowlist the paste sanitiser uses — a link typed here is no
+    // more trustworthy than one pasted, and both end up rendered and clickable.
+    if (!isSafeHref(url)) {
+      window.alert("That link can't be used. Use an http, https or mailto address.");
+      return;
+    }
+    ed.chain().focus().extendMarkRange("link").setLink({ href: url.trim() }).run();
+  }
+
   return (
     <div className={editing ? `${s.wrap} ${s.wrapEditing}` : s.wrap}>
-      {editor && editing && (
-        <div className={s.toolbar} role="toolbar" aria-label="Formatting">
+      {/*
+        Formatting appears AT the selection rather than in a permanent bar.
+        A note is mostly read, and a toolbar pinned above every document is
+        chrome you pay for on every glance to use occasionally. Block structure
+        still comes from markdown as you type (# for a heading, - for a list),
+        which the empty-document placeholder states.
+      */}
+      {editor && (
+        <BubbleMenu editor={editor} className={s.bubble}>
           <Tool
-            editor={editor}
-            label="B"
+            label={<strong>B</strong>}
             title="Bold"
             active={editor.isActive("bold")}
             onClick={() => editor.chain().focus().toggleBold().run()}
           />
           <Tool
-            editor={editor}
-            label="I"
+            label={<em>I</em>}
             title="Italic"
             active={editor.isActive("italic")}
             onClick={() => editor.chain().focus().toggleItalic().run()}
           />
           <Tool
-            editor={editor}
-            label="Code"
+            label={<s>S</s>}
+            title="Strikethrough"
+            active={editor.isActive("strike")}
+            onClick={() => editor.chain().focus().toggleStrike().run()}
+          />
+          <Tool
+            label="&lt;/&gt;"
             title="Inline code"
             active={editor.isActive("code")}
             onClick={() => editor.chain().focus().toggleCode().run()}
           />
-          <span className={s.toolSep} />
           <Tool
-            editor={editor}
+            label="🔗"
+            title={editor.isActive("link") ? "Edit link" : "Add link"}
+            active={editor.isActive("link")}
+            onClick={() => setLink(editor)}
+          />
+
+          <span className={s.toolSep} />
+
+          <Tool
             label="H1"
             title="Heading 1"
             active={editor.isActive("heading", { level: 1 })}
             onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
           />
           <Tool
-            editor={editor}
             label="H2"
             title="Heading 2"
             active={editor.isActive("heading", { level: 2 })}
             onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
           />
-          <span className={s.toolSep} />
           <Tool
-            editor={editor}
-            label="List"
+            label="H3"
+            title="Heading 3"
+            active={editor.isActive("heading", { level: 3 })}
+            onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+          />
+
+          <span className={s.toolSep} />
+
+          <Tool
+            label="•"
             title="Bulleted list"
             active={editor.isActive("bulletList")}
             onClick={() => editor.chain().focus().toggleBulletList().run()}
           />
           <Tool
-            editor={editor}
             label="1."
             title="Numbered list"
             active={editor.isActive("orderedList")}
             onClick={() => editor.chain().focus().toggleOrderedList().run()}
           />
           <Tool
-            editor={editor}
-            label="Quote"
-            title="Blockquote"
+            label="❝"
+            title="Quote"
             active={editor.isActive("blockquote")}
             onClick={() => editor.chain().focus().toggleBlockquote().run()}
           />
-          <span className={s.hint}>saves as you type</span>
-        </div>
+        </BubbleMenu>
       )}
+
       <div className={s.surface}>
         <EditorContent editor={editor} />
       </div>
