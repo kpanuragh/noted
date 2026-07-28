@@ -12,6 +12,29 @@ function step(i: number, hops?: number) {
   return { "--i": i, ...(hops === undefined ? {} : { "--hops": hops }) } as React.CSSProperties;
 }
 
+/**
+ * Group citations by the page they came from, preserving rank order.
+ *
+ * Citations are per PASSAGE, not per page — a note is split into chunks and
+ * each chunk is cited on its own, which is the honest unit for an answer: you
+ * want to know which paragraph supported a claim, not merely which file. But
+ * rendered flat, a four-chunk note appears as four identical rows titled the
+ * same thing, which reads as a duplicate bug rather than as four pieces of
+ * evidence.
+ *
+ * Grouping keeps the precision and drops the illusion: the note is named once,
+ * and every passage it contributed sits under it with its own provenance.
+ */
+function byPage(citations: Citation[]) {
+  const groups: { pageId: string; title: string; passages: Citation[] }[] = [];
+  for (const c of citations) {
+    const existing = groups.find((g) => g.pageId === c.page_id);
+    if (existing) existing.passages.push(c);
+    else groups.push({ pageId: c.page_id, title: c.title, passages: [c] });
+  }
+  return groups;
+}
+
 type Mode = "local" | "global";
 
 /**
@@ -167,17 +190,29 @@ export default function AskPage() {
           <p style={{ marginBottom: 18 }}>{local.answer}</p>
 
           {local.seed_entities.length > 0 && (
+            // Capped. This is what the question turned out to be ABOUT, and a
+            // handful of subjects is orienting; the full list from a weak
+            // extractor is a paragraph of noise that buries the answer above it.
             <p className={s.muted} style={{ marginBottom: 20 }}>
-              Followed from {local.seed_entities.map((e) => e.name).join(", ")}
+              Followed from{" "}
+              {local.seed_entities.slice(0, 6).map((e) => e.name).join(", ")}
+              {local.seed_entities.length > 6 &&
+                ` and ${local.seed_entities.length - 6} more`}
             </p>
           )}
 
           <hr className={s.divider} style={{ margin: "18px 0" }} />
 
+          {/* Says WHAT was counted. "4 sources" from one note looks like a
+              mistake; "4 passages from 1 note" is the same fact, understood. */}
           <h3 className={s.eyebrow} style={{ marginBottom: 8 }}>
             {local.citations.length === 0
               ? "No sources"
-              : `${local.citations.length} source${local.citations.length === 1 ? "" : "s"}`}
+              : (() => {
+                  const notes = byPage(local.citations).length;
+                  const p = local.citations.length;
+                  return `${p} passage${p === 1 ? "" : "s"} from ${notes} note${notes === 1 ? "" : "s"}`;
+                })()}
           </h3>
           {local.citations.length === 0 ? (
             <p className={s.empty}>
@@ -186,26 +221,50 @@ export default function AskPage() {
             </p>
           ) : (
             <ul className={s.list}>
-              {local.citations.map((c, i) => {
+              {byPage(local.citations).map((g, i) => {
                 // A passage found BY YOUR WORDS is already where it belongs and
                 // rises in place. One the graph reached enters along the
                 // connection, one beat later per hop — the same distance the
-                // amber label states, said again in motion.
-                const derived = c.why.kind !== "seed";
-                const hops = c.why.kind === "seed" ? 0 : c.why.hops;
+                // amber label states, said again in motion. The group takes the
+                // closest passage's distance, since that is how far the answer
+                // had to travel to reach this note at all.
+                const nearest = g.passages.reduce(
+                  (best, p) => {
+                    const h = p.why.kind === "seed" ? 0 : p.why.hops;
+                    return h < best ? h : best;
+                  },
+                  Infinity as number,
+                );
+                const derived = nearest > 0;
                 return (
                   <li
-                    key={c.content_hash}
+                    key={g.pageId}
                     className={derived ? s.citeRowDerived : s.citeRow}
-                    style={{ ...step(i, hops), padding: "12px 0", borderBottom: "1px solid var(--line)" }}
+                    style={{ ...step(i, nearest), padding: "14px 0", borderBottom: "1px solid var(--line)" }}
                   >
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "baseline" }}>
-                      <Link href={`/pages/${c.page_id}`} className={s.rowTitle}>
-                        {c.title}
+                      <Link href={`/pages/${g.pageId}`} className={s.rowTitle}>
+                        {g.title}
                       </Link>
-                      <Trace why={c.why} />
+                      {/* One passage: its provenance belongs on this line.
+                          Several: they may differ, so each states its own
+                          below rather than one standing for all. */}
+                      {g.passages.length === 1 ? (
+                        <Trace why={g.passages[0].why} />
+                      ) : (
+                        <span className={s.rowMeta}>{g.passages.length} passages</span>
+                      )}
                     </div>
-                    <p className={s.muted} style={{ marginTop: 5 }}>{c.snippet}</p>
+                    {g.passages.map((c) => (
+                      <div key={c.content_hash} className={g.passages.length > 1 ? s.passage : undefined}>
+                        <p className={s.muted} style={{ marginTop: 6 }}>{c.snippet}</p>
+                        {g.passages.length > 1 && (
+                          <div style={{ marginTop: 4 }}>
+                            <Trace why={c.why} />
+                          </div>
+                        )}
+                      </div>
+                    ))}
                   </li>
                 );
               })}
