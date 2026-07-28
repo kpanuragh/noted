@@ -109,6 +109,21 @@ export class UnauthorizedError extends Error {
   }
 }
 
+/**
+ * Raised when the thing asked for is not there.
+ *
+ * Separate for the same reason `UnauthorizedError` is: the caller's response
+ * differs in KIND. A generic failure means "try again"; this means "it is
+ * gone", and a surface that cannot tell them apart shows a note that no longer
+ * exists as one that is still loading — forever.
+ */
+export class NotFoundError extends Error {
+  constructor() {
+    super("not found");
+    this.name = "NotFoundError";
+  }
+}
+
 export type Workspace = {
   id: string;
   name: string;
@@ -249,6 +264,8 @@ async function json<T>(
   // response is a redirect, not a retry. Distinguished here so no panel has to
   // sniff a status code out of a message string.
   if (res.status === 401) throw new UnauthorizedError();
+  // Likewise 404: "this is gone" is not "this failed, retry".
+  if (res.status === 404) throw new NotFoundError();
   if (!res.ok) throw new Error(`noted API error: ${res.status}`);
 
   let body: unknown;
