@@ -148,6 +148,37 @@ impl NotedDoc {
         }
     }
 
+    /// Append a list with the given items, as ProseMirror nests them:
+    /// list > listItem > paragraph > text. Test-only.
+    pub fn append_list_for_test(&self, tag: &str, items: &[&str]) {
+        let frag = self.fragment();
+        let mut txn = self.doc.transact_mut();
+        let len = frag.len(&txn);
+        let list = frag.insert(&mut txn, len, XmlElementPrelim::empty(tag));
+        for (i, item) in items.iter().enumerate() {
+            let li = list.insert(&mut txn, i as u32, XmlElementPrelim::empty("listItem"));
+            let para = li.insert(&mut txn, 0, XmlElementPrelim::empty("paragraph"));
+            para.insert(&mut txn, 0, XmlTextPrelim::new(*item));
+        }
+    }
+
+    /// Append a table, nested the way ProseMirror does:
+    /// table > tableRow > tableCell > paragraph > text. Test-only.
+    pub fn append_table_for_test(&self, rows: &[[&str; 2]]) {
+        let frag = self.fragment();
+        let mut txn = self.doc.transact_mut();
+        let len = frag.len(&txn);
+        let table = frag.insert(&mut txn, len, XmlElementPrelim::empty("table"));
+        for (r, row) in rows.iter().enumerate() {
+            let tr = table.insert(&mut txn, r as u32, XmlElementPrelim::empty("tableRow"));
+            for (c, cell) in row.iter().enumerate() {
+                let td = tr.insert(&mut txn, c as u32, XmlElementPrelim::empty("tableCell"));
+                let para = td.insert(&mut txn, 0, XmlElementPrelim::empty("paragraph"));
+                para.insert(&mut txn, 0, XmlTextPrelim::new(*cell));
+            }
+        }
+    }
+
     /// Newline-joined text of each top-level node. Test-only mirror of the
     /// projection logic in Task 11.
     pub fn text_for_test(&self) -> String {
@@ -214,17 +245,48 @@ pub(crate) fn plain_text<T: ReadTxn>(
                 _ => None,
             })
             .collect::<String>(),
-        XmlOut::Element(e) => e
-            .children(txn)
-            .map(|child| plain_text(&child, txn, depth + 1))
-            .collect::<Vec<_>>()
-            .join(""),
-        XmlOut::Fragment(f) => f
-            .children(txn)
-            .map(|child| plain_text(&child, txn, depth + 1))
-            .collect::<Vec<_>>()
-            .join(""),
+        XmlOut::Element(e) => join_children(e.children(txn), txn, depth),
+        XmlOut::Fragment(f) => join_children(f.children(txn), txn, depth),
     }
+}
+
+/// Tags that sit INSIDE a line rather than starting one.
+///
+/// Everything else is treated as a block and gets a separator, which is the
+/// safe default: a node type added later is separated until someone decides
+/// otherwise, and over-separating costs a space while under-separating welds
+/// two words into a token that matches nothing.
+const INLINE_TAGS: &[&str] = &["hardBreak", "image", "mention", "emoji"];
+
+/// Concatenate children, separating BLOCK-level ones.
+///
+/// Inside a paragraph, adjacent text runs are one sentence — "Hello " and
+/// "world" must join with nothing. Between blocks they are not: a two-item
+/// list joined blind reads "first itemsecond item", and a table row "NameRole".
+/// Those tokens appear in no dictionary, match no query, and embed as noise —
+/// so a list was silently degrading its own note's searchability long before
+/// tables were on the table.
+fn join_children<T: ReadTxn>(
+    children: impl Iterator<Item = yrs::types::xml::XmlOut>,
+    txn: &T,
+    depth: usize,
+) -> String {
+    let mut out = String::new();
+    for child in children {
+        let text = plain_text(&child, txn, depth + 1);
+        if text.is_empty() {
+            continue;
+        }
+        let is_block = match &child {
+            yrs::types::xml::XmlOut::Element(e) => !INLINE_TAGS.contains(&e.tag().as_ref()),
+            _ => false,
+        };
+        if is_block && !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&text);
+    }
+    out
 }
 
 /// How many characters an anchor quotes by default.
