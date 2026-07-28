@@ -352,3 +352,64 @@ async fn related_pages_uses_the_hnsw_index() {
     );
 }
 
+
+/// A page that is merely the NEAREST must not be presented as related.
+///
+/// `related_pages` was a pure k-nearest-neighbours query: it returned `limit`
+/// pages however far away they were, so every page in a small workspace was
+/// "related" to every other. Measured on a real 22-note workspace, a cycling
+/// note came back linked to a memory-leak postmortem at distance 0.470, next
+/// to its one genuine neighbour at 0.358.
+///
+/// This is the same fault hybrid search had, fixed there and missed here.
+///
+/// MECHANISM PROTECTED: the `< MAX_COSINE_DISTANCE` predicate in `related_pages`.
+/// Delete it and the orthogonal page below comes back.
+#[tokio::test]
+async fn an_unrelated_page_is_not_returned_however_few_candidates_there_are() {
+    let (pool, ws) = setup().await;
+    let model = unique_model();
+
+    let src = page_with_vec(&pool, ws, "Source", "the source note", 0, &model).await;
+    // Orthogonal: cosine distance 1.0, the maximum. It is also the ONLY other
+    // page, so a k-nearest query has no choice but to return it.
+    let far = page_with_vec(&pool, ws, "Unrelated", "nothing in common", 400, &model).await;
+
+    let hits = noted_db::search::related_pages(&pool, src, &model, 10).await.unwrap();
+
+    assert!(
+        !hits.iter().any(|h| h.page_id == far),
+        "an orthogonal page was returned as related; related is still k-nearest"
+    );
+    assert!(hits.is_empty(), "nothing here is related, so nothing should come back");
+}
+
+/// The other half: a genuinely close page must still be returned, or the
+/// cutoff has simply turned the feature off.
+#[tokio::test]
+async fn a_close_page_is_still_returned() {
+    let (pool, ws) = setup().await;
+    let model = unique_model();
+
+    let src = page_with_vec(&pool, ws, "Source", "the source note", 0, &model).await;
+    let near = page_with_vecs_model(
+        &pool, ws, "Near",
+        // Mostly the same direction, slightly off — a real neighbour rather
+        // than an identical copy.
+        &[("a close note", {
+            let mut v = vec![0.0f32; 768];
+            v[0] = 1.0;
+            v[1] = 0.25;
+            let n = (1.0f32 + 0.0625).sqrt();
+            v.iter_mut().for_each(|x| *x /= n);
+            v
+        })],
+        &model,
+    ).await;
+
+    let hits = noted_db::search::related_pages(&pool, src, &model, 10).await.unwrap();
+    assert!(
+        hits.iter().any(|h| h.page_id == near),
+        "a genuinely close page was rejected; the cutoff is too tight"
+    );
+}

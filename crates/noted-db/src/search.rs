@@ -169,6 +169,13 @@ pub async fn related_pages(
              FROM embeddings e
              WHERE e.model_id = $2
                AND EXISTS (SELECT 1 FROM src)
+               -- The same cutoff hybrid search uses, and missing here for the
+               -- same reason it was missing there: without it this is a pure
+               -- k-nearest-neighbours query, which ALWAYS returns `limit`
+               -- rows however far away they are. On a 22-note workspace that
+               -- linked a cycling note to a memory-leak postmortem at distance
+               -- 0.470, alongside one genuine neighbour at 0.358.
+               AND (e.embedding <=> (SELECT embedding FROM src)) < $4
                AND EXISTS (
                    SELECT 1
                    FROM page_chunks pc
@@ -202,6 +209,7 @@ pub async fn related_pages(
     .bind(page_id)
     .bind(model_id)
     .bind(limit)
+    .bind(MAX_COSINE_DISTANCE)
     .fetch_all(&mut *tx)
     .await?;
 
