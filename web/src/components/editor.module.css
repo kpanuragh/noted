@@ -33,13 +33,31 @@
   box-shadow: var(--lift);
 }
 
-.toolbar {
+/*
+ * The selection menu.
+ *
+ * Formatting lives here rather than in a bar pinned above the document. A note
+ * is mostly READ, so a permanent toolbar is chrome paid for on every glance to
+ * be used occasionally; this appears only where the writer is already looking.
+ */
+.bubble {
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--line);
-  flex-wrap: wrap;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 14px rgba(20, 22, 28, 0.14), 0 1px 3px rgba(20, 22, 28, 0.1);
+  /* Narrow windows: let it scroll rather than wrap into a block that covers
+     the text it is formatting. */
+  max-width: min(92vw, 460px);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.bubble::-webkit-scrollbar {
+  display: none;
 }
 
 .tool {
@@ -75,19 +93,7 @@
   margin: 3px 5px;
 }
 
-.hint {
-  margin-left: auto;
-  font-family: var(--mono);
-  font-size: 0.6875rem;
-  color: var(--slate-soft);
-  padding-right: 4px;
-}
 
-@media (max-width: 640px) {
-  .hint {
-    display: none;
-  }
-}
 
 /* ------------------------------------------------------------- the prose -- */
 
