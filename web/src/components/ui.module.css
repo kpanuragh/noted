@@ -349,6 +349,23 @@
   transition: background-color 0.12s ease;
 }
 
+/* ---------------------------------------------------------- passages ----- */
+
+/*
+ * One passage within a cited note. Indented behind a rule so several passages
+ * read as pieces OF the note named above, rather than as separate results that
+ * happen to share a title — which is how a four-chunk note used to look.
+ */
+.passage {
+  border-left: 2px solid var(--line);
+  padding-left: 12px;
+  margin-top: 10px;
+}
+
+.passage:first-of-type {
+  margin-top: 8px;
+}
+
 /* Centred single-purpose pages: sign-in, and anything else with one job. */
 .centred {
   min-height: 100vh;
