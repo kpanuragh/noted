@@ -5,6 +5,7 @@ import Link from "next/link";
 import { api, type Citation, type GlobalAnswer, type LocalAnswer } from "@/lib/api";
 import { useWorkspace } from "@/lib/useWorkspace";
 import { Sidebar } from "@/components/Sidebar";
+import { IndexingProgress } from "@/components/IndexingProgress";
 import s from "@/components/ui.module.css";
 
 /** Style carrying a sequence position (and optionally a hop count) into CSS. */
@@ -158,6 +159,15 @@ export default function AskPage() {
           </button>
         </div>
       </form>
+
+      {/* Global mode reads only summarised themes, so when they are still
+          being written the honest thing is to show how far along that is —
+          not to let the surface look empty or broken. */}
+      {mode === "global" && workspaceId && (
+        <div style={{ marginBottom: 24 }}>
+          <IndexingProgress workspaceId={workspaceId} only="summary" />
+        </div>
+      )}
 
       {error && (
         <p role="alert" className={s.error}>

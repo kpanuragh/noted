@@ -102,6 +102,14 @@ pub struct AppState {
     /// `None` means extraction is not running, and the indexing status reports
     /// 0-of-0 rather than a backlog that will never drain.
     pub extract_model: Option<String>,
+    /// The summariser's model id, when a REAL summariser is configured.
+    ///
+    /// `None` means summaries are not being generated, so indexing reports
+    /// 0-of-0 rather than a backlog nothing will drain — the same reasoning as
+    /// `extract_model`. It cannot be read off `summariser`, because that field
+    /// always holds a provider: the read path is given a stub when none is
+    /// configured so lazy refresh has something to call.
+    pub summary_model: Option<String>,
 }
 
 impl AppState {
@@ -121,6 +129,7 @@ impl AppState {
             // this did not (every `gemini:`/`ollama:` form, once those existed)
             // silently reported 0-of-0 while extraction was in fact running.
             extract_model: None,
+            summary_model: None,
         }
     }
 

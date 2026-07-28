@@ -61,6 +61,9 @@ async fn main() -> anyhow::Result<()> {
     // reads of the same variable — they agreed only by luck, and would diverge
     // the moment either parse changed.
     let extract_model = extractor.as_ref().map(|e| e.model_id().to_string());
+    // Same reasoning, for summaries: taken from the INSTANCE, so the id the
+    // indexing status reports against is the one actually writing summaries.
+    let summary_model = summariser.as_ref().map(|s| s.model_id().to_string());
 
     let scheduler = noted_index::scheduler::Scheduler::start(
         pool.clone(),
@@ -84,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
     state.summariser = summariser
         .unwrap_or_else(|| Arc::new(noted_index::summary::StubSummariser::new()));
     state.extract_model = extract_model;
+    state.summary_model = summary_model;
 
     axum::serve(listener, app(state)).await?;
 

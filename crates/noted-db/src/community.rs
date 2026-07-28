@@ -1011,3 +1011,38 @@ pub async fn summaries_by_similarity(
         skipped_unsummarised,
     })
 }
+
+/// How many themes have a CURRENT summary, over how many could have one.
+///
+/// "Could have one" means the community has members — an empty community has
+/// nothing to describe and is never queued, so counting it would show a
+/// backlog that never reaches zero. "Current" means the stored summary still
+/// matches the community's membership and was written by this model; a stale
+/// one is pending work, not done work.
+///
+/// Same set-difference shape as the queue queries above, counted rather than
+/// listed, so the number a UI shows and the work the scheduler picks up can
+/// never disagree.
+pub async fn summary_progress(
+    pool: &sqlx::PgPool,
+    summariser_model: &str,
+    workspace_id: Option<Uuid>,
+) -> Result<(i64, i64), sqlx::Error> {
+    sqlx::query_as(
+        "SELECT
+             count(*) FILTER (
+               WHERE s.community_id IS NOT NULL
+                 AND s.model_id = $1
+                 AND s.member_set_hash IS NOT DISTINCT FROM c.member_set_hash
+             ),
+             count(*)
+         FROM communities c
+         LEFT JOIN community_summaries s ON s.community_id = c.id
+         WHERE ($2::uuid IS NULL OR c.workspace_id = $2)
+           AND EXISTS (SELECT 1 FROM community_members m WHERE m.community_id = c.id)",
+    )
+    .bind(summariser_model)
+    .bind(workspace_id)
+    .fetch_one(pool)
+    .await
+}

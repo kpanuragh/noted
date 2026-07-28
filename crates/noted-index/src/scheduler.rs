@@ -67,17 +67,30 @@ pub struct IndexingStatus {
     /// run.
     pub extracted: i64,
     pub extract_total: i64,
+    /// Themes (communities) with a current summary, over those that have
+    /// members to summarise. Global search reads ONLY summarised themes, so a
+    /// workspace can have a complete graph and still answer "nothing to answer
+    /// from" — this is the number that explains why.
+    ///
+    /// Zero-of-zero when no summariser is configured, for the same reason as
+    /// extraction above.
+    pub summarised: i64,
+    pub summary_total: i64,
 }
 
 impl IndexingStatus {
     /// Is everything the pipeline can do, done?
     pub fn is_current(&self) -> bool {
-        self.embedded >= self.embed_total && self.extracted >= self.extract_total
+        self.embedded >= self.embed_total
+            && self.extracted >= self.extract_total
+            && self.summarised >= self.summary_total
     }
 
     /// How many units of work remain. What a UI counts down.
     pub fn pending(&self) -> i64 {
-        (self.embed_total - self.embedded).max(0) + (self.extract_total - self.extracted).max(0)
+        (self.embed_total - self.embedded).max(0)
+            + (self.extract_total - self.extracted).max(0)
+            + (self.summary_total - self.summarised).max(0)
     }
 }
 
@@ -86,6 +99,7 @@ pub async fn status(
     pool: &PgPool,
     embed_model: &str,
     extract_model: Option<&str>,
+    summary_model: Option<&str>,
     workspace_id: Option<uuid::Uuid>,
 ) -> Result<IndexingStatus, sqlx::Error> {
     let (embedded, embed_total) =
@@ -100,11 +114,21 @@ pub async fn status(
         None => (0, 0),
     };
 
+    // Only communities with MEMBERS count: an empty one has nothing to
+    // describe and is never queued, so counting it would show a backlog that
+    // can never reach zero.
+    let (summarised, summary_total) = match summary_model {
+        Some(model) => noted_db::community::summary_progress(pool, model, workspace_id).await?,
+        None => (0, 0),
+    };
+
     Ok(IndexingStatus {
         embedded,
         embed_total,
         extracted,
         extract_total,
+        summarised,
+        summary_total,
     })
 }
 

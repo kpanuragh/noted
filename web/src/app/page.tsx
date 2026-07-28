@@ -1,6 +1,7 @@
 "use client";
 
 import { Sidebar } from "@/components/Sidebar";
+import { IndexingProgress } from "@/components/IndexingProgress";
 import { RecentPages } from "@/components/RecentPages";
 import { WorkspaceStatsPanel } from "@/components/WorkspaceStatsPanel";
 import { PanelBoundary } from "@/components/PanelBoundary";
@@ -25,6 +26,12 @@ export default function Home() {
             Pick up where you left off, or ask your notes a question.
           </p>
         </header>
+
+        {workspaceId && (
+          <div className={s.enter} style={{ marginBottom: 24 }}>
+            <IndexingProgress workspaceId={workspaceId} />
+          </div>
+        )}
 
         <div className={s.panels}>
           <div className={s.enter} style={{ ["--i" as string]: 1 }}>

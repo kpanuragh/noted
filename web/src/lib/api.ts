@@ -21,6 +21,22 @@ export type WorkspaceStats = {
   edges: number;
 };
 
+/**
+ * How far behind the background indexer is for a workspace.
+ *
+ * A surface that cannot do its job yet — global search with no summarised
+ * themes, search missing a note written seconds ago — should say how far along
+ * indexing is, rather than looking broken or empty.
+ */
+export type IndexingStatus = {
+  embedded: number;
+  embed_total: number;
+  extracted: number;
+  extract_total: number;
+  summarised: number;
+  summary_total: number;
+};
+
 export type QuickHit = {
   page_id: string;
   title: string;
@@ -181,6 +197,18 @@ function isWorkspaceStats(v: unknown): v is WorkspaceStats {
   );
 }
 
+function isIndexingStatus(v: unknown): v is IndexingStatus {
+  return (
+    isRecord(v) &&
+    isFiniteNumber(v.embedded) &&
+    isFiniteNumber(v.embed_total) &&
+    isFiniteNumber(v.extracted) &&
+    isFiniteNumber(v.extract_total) &&
+    isFiniteNumber(v.summarised) &&
+    isFiniteNumber(v.summary_total)
+  );
+}
+
 function isQuickHit(v: unknown): v is QuickHit {
   return isRecord(v) && isString(v.page_id) && isString(v.title) && isFiniteNumber(v.rank);
 }
@@ -318,6 +346,18 @@ export const api = {
     url.searchParams.set("workspace_id", workspaceId);
     if (limit !== undefined) url.searchParams.set("limit", String(limit));
     return json(await fetch(url.toString(), { credentials: "include" }), "/api/pages/recent", arrayOf(isPage));
+  },
+
+  async indexing(workspaceId: string): Promise<IndexingStatus> {
+    const url = new URL(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/indexing`,
+      API_BASE,
+    );
+    return json(
+      await fetch(url.toString(), { credentials: "include" }),
+      "/api/workspaces/:id/indexing",
+      isIndexingStatus,
+    );
   },
 
   async workspaceStats(workspaceId: string): Promise<WorkspaceStats> {

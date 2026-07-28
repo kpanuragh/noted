@@ -85,6 +85,7 @@ pub async fn indexing(
         &st.pool,
         st.embedder.model_id(),
         extract_model,
+        st.summary_model.as_deref(),
         Some(workspace_id),
     )
     .await?;
