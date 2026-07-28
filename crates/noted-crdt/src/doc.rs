@@ -179,6 +179,19 @@ impl NotedDoc {
         }
     }
 
+    /// Append `tag` containing the given (child tag, text) pairs. Test-only,
+    /// for checking how an arbitrary nesting projects.
+    pub fn append_nested_for_test(&self, tag: &str, children: &[(&str, &str)]) {
+        let frag = self.fragment();
+        let mut txn = self.doc.transact_mut();
+        let len = frag.len(&txn);
+        let parent = frag.insert(&mut txn, len, XmlElementPrelim::empty(tag));
+        for (i, (child_tag, text)) in children.iter().enumerate() {
+            let child = parent.insert(&mut txn, i as u32, XmlElementPrelim::empty(*child_tag));
+            child.insert(&mut txn, 0, XmlTextPrelim::new(*text));
+        }
+    }
+
     /// Newline-joined text of each top-level node. Test-only mirror of the
     /// projection logic in Task 11.
     pub fn text_for_test(&self) -> String {

@@ -185,3 +185,35 @@ fn a_table_projects_with_its_cells_separated() {
     assert!(text.contains("Name"), "{text:?}");
     assert!(text.contains("pricing"), "{text:?}");
 }
+
+/// Blocks this project defines itself must project as readably as built-in
+/// ones — a callout's paragraphs separated, a toggle's title kept with, but
+/// not welded to, its body.
+///
+/// Custom node types are exactly where a projection quietly stops working:
+/// they are unknown to the walker, so whatever it does by DEFAULT is what they
+/// get. The default here is "treat an unknown tag as a block and separate it",
+/// which is why these pass without naming callout or toggle anywhere in the
+/// projection code.
+#[test]
+fn custom_blocks_project_with_their_parts_separated() {
+    let doc = NotedDoc::new();
+    doc.append_nested_for_test(
+        "callout",
+        &[("paragraph", "first line"), ("paragraph", "second line")],
+    );
+    let callout = &doc.project()[0].text;
+    assert!(!callout.contains("linesecond"), "callout ran together: {callout:?}");
+
+    let doc2 = NotedDoc::new();
+    doc2.append_nested_for_test(
+        "details",
+        &[("summary", "Deploy steps"), ("div", "run the migration")],
+    );
+    let toggle = &doc2.project()[0].text;
+    assert!(
+        !toggle.contains("stepsrun"),
+        "toggle summary welded to its body: {toggle:?}"
+    );
+    assert!(toggle.contains("Deploy steps") && toggle.contains("run the migration"));
+}
