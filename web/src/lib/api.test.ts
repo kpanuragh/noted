@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { api } from "./api";
+import { api, NotFoundError } from "./api";
 
 beforeEach(() => vi.restoreAllMocks());
 
@@ -75,9 +75,13 @@ describe("api.recentPages", () => {
     ]);
   });
 
-  it("throws when the endpoint is not deployed yet (404)", async () => {
+  // Asserts the TYPE, not the message. A 404 now rejects with `NotFoundError`
+  // so a caller can tell "this is gone" from "this failed, retry" — the page
+  // view needs that distinction to say a note was deleted instead of showing
+  // "Loading…" forever. The panels here still only need it to reject at all.
+  it("rejects with NotFoundError when the endpoint is not deployed yet (404)", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
-    await expect(api.recentPages("ws-1")).rejects.toThrow(/404/);
+    await expect(api.recentPages("ws-1")).rejects.toBeInstanceOf(NotFoundError);
   });
 });
 
@@ -125,9 +129,9 @@ describe("api.workspaceStats", () => {
     await expect(api.workspaceStats("ws-1")).resolves.toEqual(stats);
   });
 
-  it("throws when the endpoint is not deployed yet (404)", async () => {
+  it("rejects with NotFoundError when the endpoint is not deployed yet (404)", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
-    await expect(api.workspaceStats("ws-1")).rejects.toThrow(/404/);
+    await expect(api.workspaceStats("ws-1")).rejects.toBeInstanceOf(NotFoundError);
   });
 });
 
