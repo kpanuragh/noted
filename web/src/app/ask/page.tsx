@@ -4,7 +4,13 @@ import { useState } from "react";
 import Link from "next/link";
 import { api, type Citation, type GlobalAnswer, type LocalAnswer } from "@/lib/api";
 import { useWorkspace } from "@/lib/useWorkspace";
+import { Sidebar } from "@/components/Sidebar";
 import s from "@/components/ui.module.css";
+
+/** Style carrying a sequence position (and optionally a hop count) into CSS. */
+function step(i: number, hops?: number) {
+  return { "--i": i, ...(hops === undefined ? {} : { "--hops": hops }) } as React.CSSProperties;
+}
 
 type Mode = "local" | "global";
 
@@ -69,13 +75,13 @@ export default function AskPage() {
   }
 
   return (
-    <main className={s.main} style={{ maxWidth: 760, margin: "0 auto" }}>
-      <header style={{ marginBottom: 24 }}>
-        <p className={s.eyebrow} style={{ marginBottom: 10 }}>
-          <Link href="/" style={{ textDecoration: "none" }}>
-            ← Workspace
-          </Link>
-        </p>
+    <div className={s.app}>
+      <Sidebar workspaceId={workspaceId} />
+      <main className={s.main} style={{ maxWidth: 780 }}>
+      <header className={s.enter} style={{ ...step(0), marginBottom: 24 }}>
+        <Link href="/" className={s.backLink}>
+          ← All notes
+        </Link>
         <h1 style={{ marginBottom: 8 }}>Ask your notes</h1>
         <p className={s.lede}>
           Every answer shows which passages it used, and whether it found them by
@@ -83,13 +89,17 @@ export default function AskPage() {
         </p>
       </header>
 
-      <form onSubmit={ask} className={`${s.card} ${s.cardLift}`} style={{ marginBottom: 28 }}>
-        <div role="radiogroup" aria-label="Kind of question" className={s.actions}>
+      <form
+        onSubmit={ask}
+        className={`${s.card} ${s.cardLift} ${s.enter}`}
+        style={{ ...step(1), marginBottom: 28 }}
+      >
+        <div role="radiogroup" aria-label="Kind of question" className={s.segmented}>
           <button
             type="button"
             role="radio"
             aria-checked={mode === "local"}
-            className={mode === "local" ? s.button : s.buttonQuiet}
+            className={mode === "local" ? s.segItemActive : s.segItem}
             onClick={() => setMode("local")}
           >
             About a thing
@@ -98,7 +108,7 @@ export default function AskPage() {
             type="button"
             role="radio"
             aria-checked={mode === "global"}
-            className={mode === "global" ? s.button : s.buttonQuiet}
+            className={mode === "global" ? s.segItemActive : s.segItem}
             onClick={() => setMode("global")}
           >
             Across everything
@@ -132,6 +142,23 @@ export default function AskPage() {
         </p>
       )}
 
+      {/* Reading notes takes a moment on a local model. Show the SHAPE of the
+          answer that is coming rather than a spinner, so the wait reads as
+          progress toward something. */}
+      {busy && (
+        <section className={s.card} aria-hidden="true">
+          <div className={s.skeletonRow}>
+            <div className={s.skeleton} style={{ width: "38%" }} />
+            <div className={s.skeleton} style={{ width: "92%" }} />
+            <div className={s.skeleton} style={{ width: "78%" }} />
+          </div>
+          <div className={s.skeletonRow} style={{ borderBottom: "none" }}>
+            <div className={s.skeleton} style={{ width: "30%" }} />
+            <div className={s.skeleton} style={{ width: "64%" }} />
+          </div>
+        </section>
+      )}
+
       {local && (
         <section className={s.card} aria-labelledby="answer-heading">
           <h2 id="answer-heading" className={s.sectionTitle} style={{ marginBottom: 10 }}>
@@ -159,17 +186,29 @@ export default function AskPage() {
             </p>
           ) : (
             <ul className={s.list}>
-              {local.citations.map((c) => (
-                <li key={c.content_hash} style={{ padding: "12px 0", borderBottom: "1px solid var(--line)" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "baseline" }}>
-                    <Link href={`/pages/${c.page_id}`} className={s.rowTitle}>
-                      {c.title}
-                    </Link>
-                    <Trace why={c.why} />
-                  </div>
-                  <p className={s.muted} style={{ marginTop: 5 }}>{c.snippet}</p>
-                </li>
-              ))}
+              {local.citations.map((c, i) => {
+                // A passage found BY YOUR WORDS is already where it belongs and
+                // rises in place. One the graph reached enters along the
+                // connection, one beat later per hop — the same distance the
+                // amber label states, said again in motion.
+                const derived = c.why.kind !== "seed";
+                const hops = c.why.kind === "seed" ? 0 : c.why.hops;
+                return (
+                  <li
+                    key={c.content_hash}
+                    className={derived ? s.citeRowDerived : s.citeRow}
+                    style={{ ...step(i, hops), padding: "12px 0", borderBottom: "1px solid var(--line)" }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "baseline" }}>
+                      <Link href={`/pages/${c.page_id}`} className={s.rowTitle}>
+                        {c.title}
+                      </Link>
+                      <Trace why={c.why} />
+                    </div>
+                    <p className={s.muted} style={{ marginTop: 5 }}>{c.snippet}</p>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </section>
@@ -203,8 +242,12 @@ export default function AskPage() {
             </p>
           ) : (
             <ul className={s.list}>
-              {global_.partials.map((p) => (
-                <li key={p.community_id} style={{ padding: "12px 0", borderBottom: "1px solid var(--line)" }}>
+              {global_.partials.map((p, i) => (
+                <li
+                  key={p.community_id}
+                  className={s.citeRowDerived}
+                  style={{ ...step(i, 1), padding: "12px 0", borderBottom: "1px solid var(--line)" }}
+                >
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "baseline" }}>
                     <span className={s.rowTitle}>
                       {p.member_count} related note{p.member_count === 1 ? "" : "s"}
@@ -222,6 +265,7 @@ export default function AskPage() {
           )}
         </section>
       )}
-    </main>
+      </main>
+    </div>
   );
 }

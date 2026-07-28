@@ -50,6 +50,69 @@
     "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo,
     Consolas, monospace;
+
+  /* Two easings, with different jobs. `settle` decelerates hard and stops —
+     for things that simply arrive. `travel` is gentler, for the graph rows
+     that cross distance to get here. */
+  --ease-settle: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-travel: cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+/*
+ * MOTION.
+ *
+ * The one idea again, in a second medium: colour says a value was DERIVED, and
+ * motion says how far it travelled. Everything else moves as little as
+ * possible.
+ *
+ * The editor is deliberately excluded. A writing surface that animates while
+ * you think is hostile; `editor.module.css` adds no keyframes at all.
+ */
+
+/* Content simply arriving: a short rise, then still. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Content that was REACHED — it enters along the connection it came down,
+   rather than appearing where it belongs. Used only for graph-derived rows. */
+@keyframes traverse {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The connector drawing itself, left to right: the link being followed. */
+@keyframes draw {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+/* A placeholder that is honestly "not here yet" rather than a fake row. */
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.9;
+  }
 }
 
 @media (prefers-color-scheme: dark) {
@@ -149,5 +212,10 @@ button {
   *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+    /* Delay too, not just duration. The staggers below are built from delays,
+       so without this a reader who asked for less motion would instead get the
+       same wait with none of the movement that justified it. */
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
   }
 }
