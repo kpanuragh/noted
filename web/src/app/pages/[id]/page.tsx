@@ -1,9 +1,9 @@
 "use client";
 
 import { use, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Editor } from "@/components/Editor";
-import { PageTree } from "@/components/PageTree";
+import { Sidebar } from "@/components/Sidebar";
 import { RelatedNotes } from "@/components/RelatedNotes";
 import { api, type Page } from "@/lib/api";
 import s from "@/components/ui.module.css";
@@ -14,7 +14,6 @@ import { useWorkspace } from "@/lib/useWorkspace";
 
 export default function PageView({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const router = useRouter();
   const [page, setPage] = useState<Page | null>(null);
   const [treeVersion, setTreeVersion] = useState(0);
   const ws = useWorkspace();
@@ -27,14 +26,11 @@ export default function PageView({ params }: { params: Promise<{ id: string }> }
 
   return (
     <main className={s.app}>
-      <nav className={s.sidebar}>
-        <PageTree
-            workspaceId={workspaceId}
-            refreshKey={treeVersion}
-            onSelect={(p) => router.push(`/pages/${p.id}`)}
-          />
-      </nav>
+      <Sidebar workspaceId={workspaceId} refreshKey={treeVersion} />
       <section className={s.main} style={{ maxWidth: 760 }}>
+        <Link href="/" className={s.backLink}>
+          ← All notes
+        </Link>
         {page ? (
           <PageTitle
             pageId={id}
@@ -49,8 +45,8 @@ export default function PageView({ params }: { params: Promise<{ id: string }> }
           <h1>Loading…</h1>
         )}
         <Editor pageId={id} />
+        <RelatedNotes pageId={id} />
       </section>
-      <RelatedNotes pageId={id} />
     </main>
   );
 }

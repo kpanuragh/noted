@@ -51,6 +51,135 @@
   letter-spacing: -0.02em;
 }
 
+.brand:hover .brandName {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ------------------------------------------------- sidebar navigation ---- */
+
+.sideNav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* A nav row: New page (a button) and Search / Ask (links) share one look, so
+   the sidebar reads as a single list of actions rather than mixed controls. */
+.sideAction,
+.sideLink {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 7px 8px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--slate);
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.sideAction:hover:not(:disabled),
+.sideLink:hover {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.sideAction:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* New page is the primary action — a warm mark sets it apart from the two
+   navigational links without a whole button's worth of weight. */
+.sideAction .sideGlyph {
+  color: var(--signal);
+}
+
+.sideGlyph {
+  font-family: var(--mono);
+  font-size: 0.9375rem;
+  width: 1.1em;
+  text-align: center;
+  color: var(--slate-soft);
+}
+
+.sideTree {
+  /* Pushes the page list down so the actions above read as a distinct group. */
+  margin-top: 4px;
+}
+
+/* An in-content way back, above a page's title. The sidebar brand also goes
+   home, but a reader deep in a note should not have to travel to the corner to
+   leave it. */
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8125rem;
+  color: var(--slate);
+  text-decoration: none;
+  margin-bottom: 16px;
+}
+
+.backLink:hover {
+  color: var(--ink);
+}
+
+/* ---------------------------------------------------- connected notes ---- */
+
+.related {
+  margin-top: 40px;
+}
+
+.relatedTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--signal);
+  margin-bottom: 12px;
+}
+
+.relatedGlyph {
+  color: var(--signal);
+  letter-spacing: -0.05em;
+}
+
+.relatedList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* A graph connection, styled as a warm chip — it reads as "the system linked
+   these" rather than as an ordinary link the writer placed. */
+.relatedChip {
+  background: var(--signal-wash);
+  border: 1px solid var(--signal-line);
+  color: var(--signal-ink);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.relatedChip:hover {
+  background: var(--surface);
+  border-color: var(--signal);
+}
+
 /* Centred single-purpose pages: sign-in, and anything else with one job. */
 .centred {
   min-height: 100vh;
