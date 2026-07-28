@@ -8,17 +8,44 @@ import s from "@/components/ui.module.css";
 export function RelatedNotes({ pageId }: { pageId: string }) {
   const router = useRouter();
   const [related, setRelated] = useState<RelatedHit[]>([]);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     setRelated([]);
+    setFailed(false);
     api
       .related(pageId)
-      .then(setRelated)
-      .catch(console.error);
+      .then((hits) => {
+        if (!cancelled) setRelated(hits);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [pageId]);
 
-  // An empty "Related" heading is worse than no heading — pages legitimately
-  // have no neighbours until the index catches up.
+  // A FAILED lookup and a page with no neighbours used to render identically —
+  // both as nothing at all. They are different claims: one says "nothing here
+  // is similar", the other says "I could not check". Reporting the second as
+  // the first is the same dishonesty as an answer without provenance, on a
+  // smaller scale, and it is how a restarting API looked like a correct empty
+  // result.
+  if (failed) {
+    return (
+      <aside className={s.related}>
+        <div className={s.divider} />
+        <p className={s.muted} role="status">
+          Couldn&apos;t check for similar notes just now. Your note is unaffected.
+        </p>
+      </aside>
+    );
+  }
+
+  // Genuinely nothing similar: say nothing rather than head an empty list.
+  // Pages legitimately have no neighbours until the index catches up.
   if (related.length === 0) return null;
 
   return (
