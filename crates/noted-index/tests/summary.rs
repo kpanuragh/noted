@@ -1307,3 +1307,74 @@ async fn a_memberless_community_is_never_queued_for_summary() {
         .await
         .unwrap();
 }
+
+/// What the progress number counts, and what it must not.
+///
+/// This drives a UI: "12 of 33 themes summarised". Two ways to get it wrong,
+/// both of which make the bar lie:
+///
+///   * counting MEMBERLESS communities in the total — they are never queued,
+///     so the bar would stop short of full forever;
+///   * counting a STALE summary as done — the scheduler will redo it, so the
+///     bar would read complete while work remains.
+#[tokio::test]
+async fn summary_progress_counts_only_work_that_is_actually_pending() {
+    let pool = connect().await;
+    let ws: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO workspaces (name) VALUES ('prog') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let model = format!("prog-{}", uuid::Uuid::new_v4());
+
+    // Three communities: one summarised and current, one summarised but STALE,
+    // one with no members at all.
+    let mut ids = Vec::new();
+    for hash in ["h-current", "h-stale"] {
+        let id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO communities (workspace_id, level, member_set_hash)
+             VALUES ($1, 0, $2) RETURNING id",
+        )
+        .bind(ws)
+        .bind(format!("{hash}-{}", uuid::Uuid::new_v4()))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let e = noted_db::graph::resolve_entity(
+            &pool, ws, &format!("m-{}", uuid::Uuid::new_v4()), Some("CONCEPT"), None,
+        ).await.unwrap();
+        sqlx::query("INSERT INTO community_members (community_id, entity_id) VALUES ($1, $2)")
+            .bind(id).bind(e).execute(&pool).await.unwrap();
+        ids.push(id);
+    }
+    // The memberless one.
+    sqlx::query("INSERT INTO communities (workspace_id, level, member_set_hash) VALUES ($1, 0, $2)")
+        .bind(ws)
+        .bind(format!("h-empty-{}", uuid::Uuid::new_v4()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Current summary for the first; a summary with a WRONG member hash for the
+    // second, which is exactly what membership drift leaves behind.
+    let hash0: String = sqlx::query_scalar("SELECT member_set_hash FROM communities WHERE id=$1")
+        .bind(ids[0]).fetch_one(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO community_summaries (community_id, model_id, summary, state, member_set_hash)
+         VALUES ($1,$2,'a summary','valid',$3)",
+    ).bind(ids[0]).bind(&model).bind(&hash0).execute(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO community_summaries (community_id, model_id, summary, state, member_set_hash)
+         VALUES ($1,$2,'stale prose','valid','a-hash-that-no-longer-matches')",
+    ).bind(ids[1]).bind(&model).execute(&pool).await.unwrap();
+
+    let (done, total) = noted_db::community::summary_progress(&pool, &model, Some(ws))
+        .await
+        .unwrap();
+
+    assert_eq!(total, 2, "the memberless community must not be in the total");
+    assert_eq!(done, 1, "the stale summary must count as pending, not done");
+
+    sqlx::query("DELETE FROM communities WHERE workspace_id = $1")
+        .bind(ws).execute(&pool).await.unwrap();
+}

@@ -680,3 +680,54 @@
   background: var(--surface);
   color: var(--ink);
 }
+
+/* --------------------------------------------------------- indexing ------ */
+
+/*
+ * Background progress. Amber, because this is the graph being built — the same
+ * signal the design system reserves for things the system derived, used here
+ * for the deriving itself.
+ */
+.progress {
+  border: 1px solid var(--signal-line);
+  background: var(--signal-wash);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  animation: rise 400ms var(--ease-settle) both;
+}
+
+.progressLede {
+  font-size: 0.8125rem;
+  color: var(--signal-ink);
+  margin-bottom: 12px;
+}
+
+.progressRow + .progressRow {
+  margin-top: 12px;
+}
+
+.progressHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 0.8125rem;
+  color: var(--slate);
+  margin-bottom: 5px;
+}
+
+.progressTrack {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--signal-line);
+  overflow: hidden;
+}
+
+/* Transitioned rather than animated: the bar should move when the NUMBER
+   moves, so its motion reports real progress instead of decorating a wait. */
+.progressFill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--signal);
+  transition: width 0.5s var(--ease-settle);
+}

@@ -77,7 +77,7 @@ async fn a_new_chunk_is_indexed_without_anyone_running_the_cli() {
 
     // Premise: it is NOT indexed yet. Without this the test could pass against
     // a chunk something else had already embedded.
-    let before = status(&pool, &model, None, Some(ws)).await.unwrap();
+    let before = status(&pool, &model, None, None, Some(ws)).await.unwrap();
     assert_eq!(
         (before.embedded, before.embed_total),
         (0, 1),
@@ -96,7 +96,7 @@ async fn a_new_chunk_is_indexed_without_anyone_running_the_cli() {
     // machine or wastes time on a fast one.
     let mut indexed = false;
     for _ in 0..100 {
-        let s = status(&pool, &model, None, Some(ws)).await.unwrap();
+        let s = status(&pool, &model, None, None, Some(ws)).await.unwrap();
         if s.is_current() && s.embedded == 1 {
             indexed = true;
             break;
@@ -134,7 +134,7 @@ async fn stopping_the_scheduler_actually_stops_it() {
     page_with_chunk(&pool, ws, "written after the scheduler stopped").await;
     tokio::time::sleep(Duration::from_millis(600)).await;
 
-    let s = status(&pool, &model, None, Some(ws)).await.unwrap();
+    let s = status(&pool, &model, None, None, Some(ws)).await.unwrap();
     assert_eq!(
         (s.embedded, s.embed_total),
         (0, 1),
@@ -153,7 +153,7 @@ async fn status_reports_the_backlog_rather_than_claiming_to_be_current() {
         page_with_chunk(&pool, ws, &format!("pending work {i}")).await;
     }
 
-    let s = status(&pool, &model, None, Some(ws)).await.unwrap();
+    let s = status(&pool, &model, None, None, Some(ws)).await.unwrap();
     assert_eq!(s.embed_total, 3);
     assert_eq!(s.embedded, 0);
     assert_eq!(s.pending(), 3, "the UI must be able to count this down");
@@ -170,13 +170,13 @@ async fn no_extraction_provider_means_no_extraction_backlog() {
     let model = format!("sched-{}", Uuid::new_v4());
     page_with_chunk(&pool, ws, "some text").await;
 
-    let s = status(&pool, &model, None, Some(ws)).await.unwrap();
+    let s = status(&pool, &model, None, None, Some(ws)).await.unwrap();
     assert_eq!((s.extracted, s.extract_total), (0, 0));
 
     // And with one configured, the same chunk IS pending extraction — which is
     // what proves the zero above came from the provider being absent rather
     // than from the query finding nothing.
-    let with = status(&pool, &model, Some("some-extractor"), Some(ws))
+    let with = status(&pool, &model, Some("some-extractor"), None, Some(ws))
         .await
         .unwrap();
     assert_eq!(with.extract_total, 1);
@@ -186,6 +186,8 @@ async fn no_extraction_provider_means_no_extraction_backlog() {
 #[test]
 fn is_current_and_pending_agree_on_the_boundary() {
     let done = IndexingStatus {
+        summarised: 0,
+        summary_total: 0,
         embedded: 5,
         embed_total: 5,
         extracted: 2,
@@ -195,6 +197,8 @@ fn is_current_and_pending_agree_on_the_boundary() {
     assert_eq!(done.pending(), 0);
 
     let behind = IndexingStatus {
+        summarised: 0,
+        summary_total: 0,
         embedded: 4,
         embed_total: 5,
         extracted: 0,
