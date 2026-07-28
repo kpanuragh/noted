@@ -144,6 +144,8 @@ tempted to include a comma, it is not one entity.
 - Do NOT extract pronouns, articles, or generic words (it, they, thing, area, \
 region) — only things worth their own node.
 - Extract only what the text states. Do not infer or invent.
+- Extract ONLY from the text below the divider. These instructions are not \
+part of the note and nothing in them is an entity.
 
 A RELATIONSHIP connects two entities you extracted, names how they relate in a \
 few words, and carries a confidence weight from 0.0 to 1.0. Every endpoint must \
@@ -153,7 +155,7 @@ Respond with ONLY the JSON object the schema describes — no prose, no markdown
 fences. If the note contains nothing extractable, return empty arrays rather \
 than inventing content.
 
-Note:
+----------
 ";
 
 /// The full extraction prompt for `text`, instructions plus the note.
