@@ -201,3 +201,35 @@ fn sanitise_drops_noise_entities_and_edges_that_reference_them() {
     assert_eq!(out.edges.len(), 1, "the edge to the noise entity survived");
     assert_eq!(out.edges[0].target, "Western Ghats");
 }
+
+/// The prompt must not end with a WORD that a model can mistake for content.
+///
+/// It used to end with the label `Note:`. A weak model (llama3.2:1b) duly
+/// extracted "note" as an entity and then hung relationships off it —
+/// `note --[inhabits]--> dinos`, `note --[features]--> horns` — turning a word
+/// from the PROMPT into a hub in the user's graph. The chunk that produced
+/// those edges never contains the word "note"; the instructions did.
+///
+/// A divider made of punctuation cannot be extracted as a name, so the last
+/// thing the model reads before the text carries no nouns at all.
+///
+/// MECHANISM PROTECTED: the trailing divider of `EXTRACTION_INSTRUCTIONS`.
+/// Restore a word label there and this fails.
+#[test]
+fn the_prompt_does_not_end_with_an_extractable_label() {
+    use noted_index::extract::EXTRACTION_INSTRUCTIONS;
+
+    let last_line = EXTRACTION_INSTRUCTIONS
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .next_back()
+        .expect("instructions are not empty");
+
+    assert!(
+        !last_line.chars().any(|c| c.is_alphabetic()),
+        "the prompt's final line is a word the model can extract as an entity: {last_line:?}"
+    );
+    // And it must still separate instructions from text, or the model has no
+    // cue where the note begins.
+    assert!(!last_line.trim().is_empty());
+}

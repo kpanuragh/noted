@@ -21,11 +21,17 @@ async fn measure_distances_for_related_and_unrelated_queries() {
     let embedder = FastEmbed::new().unwrap();
 
     let queries = [
-        "Data",              // the reported case: matches nothing lexically
-        "asdfghjkl qwerty",  // pure nonsense
-        "banking regulation compliance", // plausible English, unrelated content
-        "dinosaurs",         // should genuinely match
-        "Kerala beaches",    // should genuinely match
+        // Should genuinely match, by MEANING rather than shared words — these
+        // are the ones a threshold must not reject.
+        "my container keeps getting killed",
+        "stop charging customers twice",
+        "what to make for a festival lunch",
+        "cycling route out of the city",
+        "why does my coffee taste sour",
+        // Should match nothing.
+        "asdfghjkl qwerty",
+        "banking regulation compliance",
+        "Data",
     ];
 
     println!("\n{:<34} {:>8} {:>8} {:>8} {:>10}", "query", "min", "p50", "max", "kept<0.45");
@@ -125,4 +131,88 @@ async fn embed_summaries_for_one_workspace() {
         .unwrap();
     }
     println!("embedded {} summaries for {ws}", rows.len());
+}
+
+/// Embed one workspace's pending chunks now, past the global queue.
+///
+/// The scheduler's stages are serial, so a slow extractor stalls embedding
+/// behind it — on this shared database, behind thousands of unrelated chunks.
+/// Embedding is local and fast; this does just one workspace's.
+///
+/// ```text
+/// EMBED_WORKSPACE=<uuid> cargo test -p noted-index --features embed \
+///   --test distance_calibration embed_one_workspace_now -- --ignored --nocapture
+/// ```
+#[tokio::test]
+#[ignore = "operator tool: embeds a named workspace's chunks"]
+async fn embed_one_workspace_now() {
+    let url = std::env::var("TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
+    let pool = noted_db::connect(&url).await.unwrap();
+    let ws: uuid::Uuid = std::env::var("EMBED_WORKSPACE")
+        .expect("set EMBED_WORKSPACE=<uuid>")
+        .parse()
+        .unwrap();
+
+    let embedder = std::sync::Arc::new(FastEmbed::new().unwrap());
+    let worker = noted_index::worker::Worker::new_scoped(pool.clone(), embedder, ws).unwrap();
+    let n = worker.drain().await.expect("drain");
+    println!("embedded {n} chunks for {ws}");
+}
+
+/// Run real queries against a workspace and print what search returns.
+///
+/// Deliberately mixes three kinds of query: words that appear verbatim (the
+/// lexical arm should win), words that do NOT appear anywhere in the target
+/// note (only the vector arm can find it), and nonsense (nothing should come
+/// back — a search that always answers cannot be trusted when it does).
+///
+/// ```text
+/// SEARCH_WORKSPACE=<uuid> cargo test -p noted-index --features embed \
+///   --test distance_calibration search_probe -- --ignored --nocapture
+/// ```
+#[tokio::test]
+#[ignore = "operator tool: runs search against a real workspace"]
+async fn search_probe() {
+    let url = std::env::var("TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://noted:noted@localhost:5433/noted".into());
+    let pool = noted_db::connect(&url).await.unwrap();
+    let ws: uuid::Uuid = std::env::var("SEARCH_WORKSPACE")
+        .expect("set SEARCH_WORKSPACE=<uuid>")
+        .parse()
+        .unwrap();
+    let user: uuid::Uuid = sqlx::query_scalar(
+        "SELECT user_id FROM workspace_members WHERE workspace_id = $1 LIMIT 1",
+    )
+    .bind(ws)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let embedder = FastEmbed::new().unwrap();
+
+    let queries: &[(&str, &str)] = &[
+        ("sourdough starter", "verbatim"),
+        ("connection pooling", "verbatim"),
+        ("my container keeps getting killed", "semantic — note says OOMKilled"),
+        ("stop charging customers twice", "semantic — note says duplicate charges"),
+        ("what to make for a festival lunch", "semantic — note is Onam sadya"),
+        ("cycling route out of the city", "semantic — note is Nandi Hills"),
+        ("zzzz qwerty nonsense", "should return NOTHING"),
+    ];
+
+    for (q, why) in queries {
+        let v = embedder.embed(&[q.to_string()]).await.unwrap().pop().unwrap();
+        let hits = noted_db::search::hybrid(&pool, ws, user, q, &v, embedder.model_id(), 4)
+            .await
+            .unwrap();
+        println!("\n\"{q}\"  ({why})");
+        if hits.is_empty() {
+            println!("    (no results)");
+        }
+        for h in hits.iter().take(3) {
+            println!("    {:.3}  {}", h.score, h.title);
+        }
+    }
+    println!();
 }
