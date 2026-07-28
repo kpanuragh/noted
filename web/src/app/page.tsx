@@ -19,7 +19,7 @@ export default function Home() {
       <Sidebar workspaceId={workspaceId} />
 
       <main className={s.main}>
-        <header style={{ marginBottom: 28 }}>
+        <header className={s.enter} style={{ marginBottom: 28 }}>
           <h1 style={{ marginBottom: 8 }}>Your workspace</h1>
           <p className={s.lede}>
             Pick up where you left off, or ask your notes a question.
@@ -27,12 +27,16 @@ export default function Home() {
         </header>
 
         <div className={s.panels}>
+          <div className={s.enter} style={{ ["--i" as string]: 1 }}>
           <PanelBoundary title="Recently edited">
             {workspaceId && <RecentPages workspaceId={workspaceId} />}
           </PanelBoundary>
+          </div>
+          <div className={s.enter} style={{ ["--i" as string]: 2 }}>
           <PanelBoundary title="Your knowledge base">
             {workspaceId && <WorkspaceStatsPanel workspaceId={workspaceId} />}
           </PanelBoundary>
+          </div>
         </div>
       </main>
     </div>

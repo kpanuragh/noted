@@ -31,10 +31,11 @@ export function RelatedNotes({ pageId }: { pageId: string }) {
         <span className={s.relatedGlyph}>◆─</span> Connected notes
       </p>
       <div className={s.relatedList}>
-        {related.map((r) => (
+        {related.map((r, i) => (
           <button
             key={r.page_id}
             className={s.relatedChip}
+            style={{ ["--i" as string]: i }}
             onClick={() => router.push(`/pages/${r.page_id}`)}
           >
             {r.title}

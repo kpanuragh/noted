@@ -178,6 +178,175 @@
 .relatedChip:hover {
   background: var(--surface);
   border-color: var(--signal);
+  transform: translateY(-1px);
+}
+
+/* Connections stagger in left to right, so a page's neighbours read as a path
+   being walked rather than a row of buttons appearing at once. */
+.relatedChip {
+  animation: traverse 420ms var(--ease-travel) both;
+  animation-delay: calc(var(--i, 0) * 70ms);
+}
+
+/* ------------------------------------------------------------- motion ---- */
+
+/* The default arrival: a short rise. `--i` sets position in a sequence, so a
+   page settles top-to-bottom instead of flashing in as one block. */
+.enter {
+  animation: rise 400ms var(--ease-settle) both;
+  animation-delay: calc(var(--i, 0) * 60ms);
+}
+
+/*
+ * THE SIGNATURE.
+ *
+ * A citation that MATCHED YOUR WORDS is already where it belongs — it rises in
+ * place. A citation the graph WALKED TO enters along the connection instead,
+ * and waits one beat per hop before it arrives. The delay is computed from
+ * `--hops`, so the stagger is not decoration: it is the same distance the
+ * amber glyph states in words, said again in time.
+ */
+.citeRow {
+  animation: rise 420ms var(--ease-settle) both;
+  animation-delay: calc(var(--i, 0) * 55ms);
+}
+
+.citeRowDerived {
+  composes: citeRow;
+  animation-name: traverse;
+  animation-timing-function: var(--ease-travel);
+  animation-delay: calc(var(--i, 0) * 55ms + var(--hops, 1) * 110ms);
+}
+
+/* The link drawing itself as the row lands. */
+.citeRowDerived .traceGlyph {
+  animation: draw 320ms var(--ease-travel) both;
+  animation-delay: calc(var(--i, 0) * 55ms + var(--hops, 1) * 110ms + 90ms);
+}
+
+/* ------------------------------------------------- segmented control ----- */
+
+/*
+ * Two questions, one control. These were a primary and a secondary button side
+ * by side, which said "do this, or maybe that" rather than "you are in one of
+ * two modes". A segment makes the choice legible at a glance.
+ */
+.segmented {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.segItem {
+  border: 0;
+  background: none;
+  color: var(--slate);
+  border-radius: 999px;
+  padding: 7px 16px;
+  font-size: 0.8125rem;
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.segItem:hover {
+  color: var(--ink);
+}
+
+.segItemActive {
+  composes: segItem;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--lift);
+}
+
+/* --------------------------------------------------------- skeletons ----- */
+
+/* Shown while results are loading. A muted bar, not a fake row of text: it
+   should read as "not here yet", never as content you might try to read. */
+.skeleton {
+  height: 11px;
+  border-radius: 4px;
+  background: var(--surface-sunken);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.skeletonRow {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 9px;
+}
+
+/* ----------------------------------------------------- search results ---- */
+
+.searchRow {
+  display: block;
+  padding: 14px 12px;
+  margin: 0 -12px;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  transition: background-color 0.13s ease;
+  animation: rise 380ms var(--ease-settle) both;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+
+.searchRow:hover {
+  background: var(--surface);
+}
+
+.searchSnippet {
+  color: var(--slate);
+  font-size: 0.875rem;
+  margin-top: 4px;
+  /* Two lines is enough to judge relevance; more turns a result list into a
+     wall and hides the next result below the fold. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Nudge on hover: enough to feel responsive, too small to be a bounce. */
+.sideAction:hover:not(:disabled),
+.sideLink:hover {
+  transform: translateX(2px);
+}
+
+.sideAction,
+.sideLink {
+  transition: background-color 0.12s ease, color 0.12s ease,
+    transform 0.12s var(--ease-settle);
+}
+
+.card {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease,
+    transform 0.15s var(--ease-settle);
+}
+
+.cardLift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 2px 6px rgba(20, 22, 28, 0.06), 0 10px 26px rgba(20, 22, 28, 0.07);
+}
+
+.button:active:not(:disabled),
+.buttonQuiet:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.button,
+.buttonQuiet {
+  transition: background-color 0.12s ease, border-color 0.12s ease,
+    transform 0.1s ease;
+}
+
+.row {
+  transition: background-color 0.12s ease;
 }
 
 /* Centred single-purpose pages: sign-in, and anything else with one job. */
