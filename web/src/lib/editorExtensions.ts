@@ -1,5 +1,9 @@
 import StarterKit from "@tiptap/starter-kit";
 import Link from "@tiptap/extension-link";
+import Image from "@tiptap/extension-image";
+import { TableKit } from "@tiptap/extension-table";
+import { TaskList, TaskItem } from "@tiptap/extension-list";
+import { SlashCommand } from "@/lib/slashCommand";
 
 /**
  * The URL schemes a link may use.
@@ -79,6 +83,15 @@ export function editorExtensions() {
     // both registered means two marks named `link` — the bundled one would
     // win and keep parsing the attributes CleanLink exists to drop.
     StarterKit.configure({ undoRedo: false, link: false }),
+    // Type "/" at the start of a line to insert a block.
+    SlashCommand,
+    // Blocks beyond StarterKit's prose set. Each one had to survive the CRDT
+    // projection before it could be offered: a block the writer can insert but
+    // the index cannot read is worse than one that does not exist.
+    TableKit.configure({ table: { resizable: true } }),
+    TaskList,
+    TaskItem.configure({ nested: true }),
+    Image.configure({ inline: false }),
     CleanLink.configure({
       openOnClick: false,
       autolink: true,

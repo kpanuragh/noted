@@ -148,3 +148,40 @@ fn formatted_runs_keep_their_words() {
     ]);
     assert_eq!(doc.project()[0].text, "plain emphasised tail");
 }
+
+/// Structured blocks must not run their parts together.
+///
+/// `plain_text` concatenates child text with NO separator, which is right
+/// inside a paragraph — "Hello " + "world" is one sentence — and wrong for a
+/// list or a table, where each item is its own phrase. Joined blind, a
+/// two-item list projects as "first itemsecond item" and a table row as
+/// "NameAge": tokens that appear in no dictionary, match no query, and embed
+/// as noise.
+///
+/// This matters before offering those blocks in the editor at all. A block the
+/// writer can insert but the index cannot read is worse than one that does not
+/// exist.
+#[test]
+fn a_list_projects_with_its_items_separated() {
+    let doc = NotedDoc::new();
+    doc.append_list_for_test("bulletList", &["first item", "second item"]);
+
+    let text = &doc.project()[0].text;
+    assert!(
+        !text.contains("itemsecond"),
+        "list items ran together: {text:?}"
+    );
+    assert!(text.contains("first item"), "{text:?}");
+    assert!(text.contains("second item"), "{text:?}");
+}
+
+#[test]
+fn a_table_projects_with_its_cells_separated() {
+    let doc = NotedDoc::new();
+    doc.append_table_for_test(&[["Name", "Role"], ["Priya", "pricing"]]);
+
+    let text = &doc.project()[0].text;
+    assert!(!text.contains("NameRole"), "cells ran together: {text:?}");
+    assert!(text.contains("Name"), "{text:?}");
+    assert!(text.contains("pricing"), "{text:?}");
+}
