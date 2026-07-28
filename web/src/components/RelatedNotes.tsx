@@ -24,11 +24,16 @@ export function RelatedNotes({ pageId }: { pageId: string }) {
   return (
     <aside className={s.related}>
       <div className={s.divider} />
-      {/* Amber, because these are GRAPH-DERIVED — the connections the system
-          found between notes, not links anyone typed. The one place in the app
-          that colour is allowed to mean "the system inferred this". */}
+      {/* "Similar", not "Connected". These come from comparing what the notes
+          MEAN — nearest embeddings — not from walking the knowledge graph, and
+          calling them connections claimed a provenance the query does not have.
+          In a product whose whole argument is showing how it reached an answer,
+          mislabelling the method is the worst available bug.
+
+          Amber still applies: the system derived this rather than the writer
+          typing a link, which is exactly what the accent is reserved for. */}
       <p className={s.relatedTitle}>
-        <span className={s.relatedGlyph}>◆─</span> Connected notes
+        <span className={s.relatedGlyph}>◆</span> Similar notes
       </p>
       <div className={s.relatedList}>
         {related.map((r, i) => (
