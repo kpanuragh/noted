@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { EditorContent, useEditor, type Editor as TiptapEditor } from "@tiptap/react";
 import Collaboration from "@tiptap/extension-collaboration";
 import * as Y from "yjs";
@@ -50,6 +50,14 @@ function Tool({
 export function Editor({ pageId }: { pageId: string }) {
   const doc = useMemo(() => new Y.Doc(), [pageId]);
 
+  // A page opens as a clean rendered document and becomes an editor when the
+  // reader clicks into it. `editing` is the FOCUS state, not a separate mode
+  // the user has to toggle: the editor is always editable underneath (so a
+  // click lands the caret and typing just works), and only the chrome — the
+  // toolbar and the surface's frame — follows focus. Click away and it reads
+  // as a finished document again.
+  const [editing, setEditing] = useState(false);
+
   useEffect(() => {
     const provider = createProvider(pageId, doc);
     return () => provider.destroy();
@@ -63,13 +71,18 @@ export function Editor({ pageId }: { pageId: string }) {
         // `field` must match noted_crdt::ROOT on the server.
         Collaboration.configure({ document: doc, field: "prosemirror" }),
       ],
+      onFocus: () => setEditing(true),
+      // Toolbar buttons preventDefault their mousedown, so using one does NOT
+      // blur the document — the view stays focused and the toolbar stays up.
+      // Blur therefore means the reader genuinely clicked away.
+      onBlur: () => setEditing(false),
     },
     [doc],
   );
 
   return (
-    <div className={s.wrap}>
-      {editor && (
+    <div className={editing ? `${s.wrap} ${s.wrapEditing}` : s.wrap}>
+      {editor && editing && (
         <div className={s.toolbar} role="toolbar" aria-label="Formatting">
           <Tool
             editor={editor}

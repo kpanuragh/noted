@@ -8,18 +8,29 @@
  * before you touch it.
  */
 
+/* READ MODE (default). A page opens as a finished document: no frame, no
+   toolbar, nothing to say "form field". The border and card only appear once
+   the reader clicks in to edit. */
 .wrap {
-  border: 1px solid var(--line);
+  border: 1px solid transparent;
   border-radius: var(--radius);
-  background: var(--surface);
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, background-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
-/* Focus is shown on the WRAPPER, quietly. A document is not a form field: the
-   caret is the primary affordance, so the surface only warms slightly to
-   confirm which pane has the keyboard. */
-.wrap:focus-within {
+/* A quiet hover cue that the document is editable, without committing to the
+   full editor chrome until the reader actually clicks in. */
+.wrap:not(.wrapEditing):hover {
+  border-color: var(--line);
+  cursor: text;
+}
+
+/* EDIT MODE. Focused, it becomes an actual surface: bordered card, toolbar
+   above, warmed just enough to confirm which pane has the keyboard. */
+.wrapEditing {
   border-color: var(--line-strong);
+  background: var(--surface);
+  box-shadow: var(--lift);
 }
 
 .toolbar {
