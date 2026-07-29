@@ -217,3 +217,18 @@ fn custom_blocks_project_with_their_parts_separated() {
     );
     assert!(toggle.contains("Deploy steps") && toggle.contains("run the migration"));
 }
+
+/// Columns must not weld their halves together.
+///
+/// Two columns are two separate trains of thought placed side by side, not one
+/// sentence — "Left sideRight side" is exactly the token the block separator
+/// exists to prevent, and columns are the block most likely to produce it since
+/// their children sit adjacent by definition.
+#[test]
+fn columns_project_with_their_sides_separated() {
+    let doc = NotedDoc::new();
+    doc.append_nested_for_test("div", &[("div", "Left side"), ("div", "Right side")]);
+    let text = &doc.project()[0].text;
+    assert!(!text.contains("sideRight"), "columns ran together: {text:?}");
+    assert!(text.contains("Left side") && text.contains("Right side"));
+}

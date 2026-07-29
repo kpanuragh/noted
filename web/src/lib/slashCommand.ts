@@ -44,10 +44,14 @@ export const SlashCommand = Extension.create({
       Suggestion<SlashItem>({
         editor: this.editor,
         char: "/",
-        // Only at the start of an empty-ish line, as in Notion: a "/" typed
-        // mid-sentence is punctuation, not a command.
-        allowSpaces: false,
+        // Only at the start of a line, as in Notion: a "/" typed mid-sentence
+        // is punctuation, not a command.
         startOfLine: true,
+        // Spaces ARE part of the query. Every multi-word entry — "2 columns",
+        // "To-do list", "Code block" — is unreachable without this: the moment
+        // you type the space the suggestion aborts and your "/2 col" is left
+        // sitting in the note as text.
+        allowSpaces: true,
         items: ({ query }) => filterSlashItems(query),
         command: ({ editor, range, props }) => props.run(editor, range),
         render: () => ({

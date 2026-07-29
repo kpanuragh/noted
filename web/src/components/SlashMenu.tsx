@@ -122,6 +122,20 @@ export const SLASH_ITEMS: SlashItem[] = [
     },
   },
   {
+    title: "2 columns",
+    hint: "Two side by side",
+    glyph: "◫",
+    keywords: ["columns", "column", "side", "split", "two", "2"],
+    run: (e, r) => e.chain().focus().deleteRange(r).setColumns(2).run(),
+  },
+  {
+    title: "3 columns",
+    hint: "Three side by side",
+    glyph: "◫",
+    keywords: ["columns", "column", "side", "split", "three", "3"],
+    run: (e, r) => e.chain().focus().deleteRange(r).setColumns(3).run(),
+  },
+  {
     title: "Quote",
     hint: "Set text apart",
     glyph: "❝",
@@ -188,13 +202,11 @@ export const SlashMenu = forwardRef<
     },
   }));
 
-  if (items.length === 0) {
-    return (
-      <div className={s.menu}>
-        <p className={s.empty}>No blocks match that.</p>
-      </div>
-    );
-  }
+  // Nothing matches: show nothing. With spaces allowed in the query, a writer
+  // who typed "/" and carried on writing a sentence would otherwise be trailed
+  // by a "no matches" card for the rest of the line. The menu disappearing IS
+  // the signal that this is prose, not a command.
+  if (items.length === 0) return null;
 
   return (
     <div className={s.menu} role="listbox" aria-label="Insert block">

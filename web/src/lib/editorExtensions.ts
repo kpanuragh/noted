@@ -4,7 +4,7 @@ import Image from "@tiptap/extension-image";
 import { TableKit } from "@tiptap/extension-table";
 import { TaskList, TaskItem } from "@tiptap/extension-list";
 import Youtube from "@tiptap/extension-youtube";
-import { Callout, ToggleBlock, ToggleSummary, ToggleBody } from "@/lib/blocks";
+import { Callout, ToggleBlock, ToggleSummary, ToggleBody, Columns, Column } from "@/lib/blocks";
 import { SlashCommand } from "@/lib/slashCommand";
 
 /**
@@ -100,6 +100,8 @@ export function editorExtensions() {
     ToggleBlock,
     ToggleSummary,
     ToggleBody,
+    Columns,
+    Column,
     CleanLink.configure({
       openOnClick: false,
       autolink: true,
