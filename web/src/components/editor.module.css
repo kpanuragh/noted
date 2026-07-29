@@ -405,3 +405,45 @@
 .surface :global(.ProseMirror div[data-type="column"] > *:first-child) {
   margin-top: 0;
 }
+
+/* The table menu carries more controls than the formatting one and was being
+   clipped at the 460px cap — with "Delete table", the one control you cannot
+   guess your way to, as the casualty. It gets its own width. */
+.bubbleWide {
+  composes: bubble;
+  max-width: min(94vw, 640px);
+}
+
+/* The arrow controls. Set larger than a text button because the glyphs carry
+   the meaning here and at 13px "↑+" reads as a smudge. */
+.toolGlyph {
+  composes: tool;
+  font-size: 0.9375rem;
+  letter-spacing: -0.02em;
+  padding: 3px 7px;
+}
+
+/* A group label inside a menu — "Row", "Col". Quiet, because it names the
+   controls rather than being one. */
+.menuLabel {
+  font-family: var(--mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--slate-soft);
+  padding: 0 4px 0 6px;
+  white-space: nowrap;
+}
+
+/* The one destructive control in the table menu. Coloured on hover rather than
+   always, so it is findable without shouting at a writer who is only adding
+   rows. */
+.toolDanger {
+  composes: tool;
+  white-space: nowrap;
+}
+
+.toolDanger:hover {
+  background: var(--danger-wash);
+  color: var(--danger);
+}
