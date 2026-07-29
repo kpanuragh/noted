@@ -1,6 +1,7 @@
 "use client";
 
 import { use, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Editor } from "@/components/Editor";
 import { Sidebar } from "@/components/Sidebar";
@@ -21,8 +22,25 @@ export default function PageView({ params }: { params: Promise<{ id: string }> }
   const [page, setPage] = useState<Page | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "missing" | "failed">("loading");
   const [treeVersion, setTreeVersion] = useState(0);
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const router = useRouter();
   const ws = useWorkspace();
   const workspaceId = ws.status === "ready" ? ws.current : "";
+
+  async function remove() {
+    if (deleting) return;
+    setDeleting(true);
+    try {
+      await api.deletePage(id);
+      router.push("/");
+    } catch {
+      // Stay on the note and say so. Navigating away on a failed delete would
+      // leave the impression it worked.
+      setDeleting(false);
+      setStatus("failed");
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -48,9 +66,35 @@ export default function PageView({ params }: { params: Promise<{ id: string }> }
     <main className={s.app}>
       <Sidebar workspaceId={workspaceId} refreshKey={treeVersion} />
       <section className={s.main} style={{ maxWidth: 760 }}>
-        <Link href="/" className={s.backLink}>
-          ← All notes
-        </Link>
+        <div className={s.pageBar}>
+          <Link href="/" className={s.backLink}>
+            ← All notes
+          </Link>
+          {/* Two steps, because deleting a note cannot be undone from here and
+              a single mis-click should not be able to do it. The confirming
+              state names the consequence rather than asking "are you sure?",
+              which tells the reader nothing they did not already know. */}
+          {status === "ready" &&
+            (confirming ? (
+              <span className={s.confirmRow}>
+                <span className={s.rowMeta}>Delete this note?</span>
+                <button className={s.dangerButton} onClick={remove} disabled={deleting}>
+                  {deleting ? "Deleting…" : "Delete"}
+                </button>
+                <button
+                  className={s.buttonQuiet}
+                  onClick={() => setConfirming(false)}
+                  disabled={deleting}
+                >
+                  Keep
+                </button>
+              </span>
+            ) : (
+              <button className={s.quietAction} onClick={() => setConfirming(true)}>
+                Delete
+              </button>
+            ))}
+        </div>
         {status === "ready" && page && (
           <PageTitle
             pageId={id}

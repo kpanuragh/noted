@@ -79,7 +79,9 @@ pub fn app(state: AppState) -> Router {
         .route("/api/pages/recent", get(routes::pages::recent))
         .route(
             "/api/pages/{id}",
-            get(routes::pages::get).patch(routes::pages::rename),
+            get(routes::pages::get)
+                .patch(routes::pages::rename)
+                .delete(routes::pages::delete),
         )
         .route("/api/pages/{id}/reproject", post(routes::pages::reproject))
         .route("/api/pages/{id}/related", get(routes::search::related))
