@@ -40,6 +40,7 @@ describe("slash menu", () => {
       Image: "image",
       Callout: "callout",
       Toggle: "toggleBlock",
+      "2 columns": "columns",
       Video: "youtube",
       Quote: "blockquote",
       "Code block": "codeBlock",
