@@ -127,6 +127,27 @@ pub async fn rename(
     }
 }
 
+/// `DELETE /api/pages/{id}`
+///
+/// Archives the page. Soft by design — see `pages::archive`: the whole crate
+/// already reads "live" as `archived_at IS NULL`, and the graph reaper already
+/// sweeps an archived page's entities and edges, so this is deletion as the
+/// rest of the system already understands it.
+///
+/// 404 rather than 204 when nothing was archived, so a delete of something
+/// already gone is distinguishable from one that did work. `MemberPage` has
+/// already rejected a page in a workspace the caller is not a member of.
+pub async fn delete(
+    State(st): State<AppState>,
+    MemberPage(id): MemberPage,
+) -> Result<StatusCode, AppError> {
+    if pages::archive(&st.pool, id).await? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(AppError::NotFound)
+    }
+}
+
 #[derive(serde::Serialize)]
 pub struct ReprojectResponse {
     pub blocks: usize,

@@ -286,3 +286,75 @@ async fn rename_unknown_page_returns_false() {
         "rename() must return false when no page matches the id"
     );
 }
+
+/// Deleting a note ARCHIVES it, and the rest of the system already knows what
+/// that means.
+///
+/// `archived_at` is not a new idea here: every read query in this crate already
+/// filters on it, and `graph::reap_graph` already treats an archived page's
+/// entities and edges as dead. A hard DELETE would instead have to cascade
+/// through chunks, embeddings, edges and communities — or leave them orphaned —
+/// for no gain, since what a person means by "delete this note" is that it
+/// stops appearing, not that its bytes are unrecoverable.
+#[tokio::test]
+async fn archiving_a_page_removes_it_from_every_view() {
+    let (pool, ws) = setup().await;
+    let page = noted_db::pages::create(&pool, ws, None, "To be deleted")
+        .await
+        .unwrap();
+
+    // Premise: it is there to begin with, or this proves nothing.
+    assert!(noted_db::pages::get(&pool, page.id).await.unwrap().is_some());
+    assert!(
+        noted_db::pages::children(&pool, ws, None)
+            .await
+            .unwrap()
+            .iter()
+            .any(|p| p.id == page.id),
+        "premise: the page is in the tree before archiving"
+    );
+
+    assert!(noted_db::pages::archive(&pool, page.id).await.unwrap());
+
+    assert!(
+        noted_db::pages::get(&pool, page.id).await.unwrap().is_none(),
+        "an archived page must not be fetchable"
+    );
+    assert!(
+        !noted_db::pages::children(&pool, ws, None)
+            .await
+            .unwrap()
+            .iter()
+            .any(|p| p.id == page.id),
+        "an archived page must leave the tree"
+    );
+    assert!(
+        !noted_db::pages::recent(&pool, ws, 50)
+            .await
+            .unwrap()
+            .iter()
+            .any(|p| p.id == page.id),
+        "an archived page must leave Recently edited"
+    );
+}
+
+/// Archiving something that is not there is not an error, it is a no-op — so
+/// the route can answer honestly with 404 instead of a 500.
+#[tokio::test]
+async fn archiving_a_missing_page_reports_that_rather_than_failing() {
+    let (pool, _ws) = setup().await;
+    assert!(!noted_db::pages::archive(&pool, uuid::Uuid::new_v4()).await.unwrap());
+}
+
+/// Archiving twice is idempotent. A double-click on delete, or a retried
+/// request, must not turn into an error the user has to interpret.
+#[tokio::test]
+async fn archiving_twice_is_idempotent() {
+    let (pool, ws) = setup().await;
+    let page = noted_db::pages::create(&pool, ws, None, "Twice").await.unwrap();
+    assert!(noted_db::pages::archive(&pool, page.id).await.unwrap());
+    assert!(
+        !noted_db::pages::archive(&pool, page.id).await.unwrap(),
+        "the second archive should report no change, not fail"
+    );
+}

@@ -148,6 +148,32 @@ pub async fn recent(
     .await
 }
 
+/// Archive a page — what "delete" means here.
+///
+/// Soft, and deliberately so. `archived_at` is not a new idea: every read query
+/// in this module already filters on it, and `graph::reap_graph` already treats
+/// an archived page's entities and edges as dead and sweeps them. A hard DELETE
+/// would have to cascade through chunks, embeddings, edges and communities — or
+/// leave them orphaned — for no gain, because what a person means by "delete
+/// this note" is that it stops appearing, not that its bytes are unrecoverable.
+///
+/// `AND archived_at IS NULL` makes this idempotent: archiving twice reports no
+/// change rather than bumping the timestamp, so a double-click or a retried
+/// request cannot quietly rewrite when the page was deleted.
+///
+/// Returns `Ok(true)` if a live page was archived, `Ok(false)` if there was no
+/// live page with that id — which lets the caller answer 404 rather than 500.
+pub async fn archive(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE pages SET archived_at = now(), updated_at = now()
+         WHERE id = $1 AND archived_at IS NULL",
+    )
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Returns `Ok(true)` if a page was renamed, `Ok(false)` if no such page exists.
 pub async fn rename(pool: &PgPool, id: Uuid, title: &str) -> Result<bool, sqlx::Error> {
     let result = sqlx::query("UPDATE pages SET title = $2, updated_at = now() WHERE id = $1")

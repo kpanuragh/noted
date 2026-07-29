@@ -731,3 +731,60 @@
   background: var(--signal);
   transition: width 0.5s var(--ease-settle);
 }
+
+/* ------------------------------------------------------- page actions ---- */
+
+.pageBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+/* The back link already carries this margin; inside the bar it would double. */
+.pageBar .backLink {
+  margin-bottom: 0;
+}
+
+.confirmRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* An action that is available but not invited. Delete should be findable
+   without competing with the writing. */
+.quietAction {
+  background: none;
+  border: 0;
+  color: var(--slate-soft);
+  font-size: 0.8125rem;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.12s ease, background-color 0.12s ease;
+}
+
+.quietAction:hover {
+  color: var(--danger);
+  background: var(--danger-wash);
+}
+
+/* Only the CONFIRMING step is loud. The first click is reversible; this one
+   is not, and it should look like it. */
+.dangerButton {
+  background: var(--danger);
+  color: var(--paper);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  font-size: 0.8125rem;
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.dangerButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

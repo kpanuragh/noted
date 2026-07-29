@@ -365,6 +365,14 @@ export const api = {
     return json(await fetch(url.toString(), { credentials: "include" }), "/api/pages/recent", arrayOf(isPage));
   },
 
+  async deletePage(pageId: string): Promise<void> {
+    const url = new URL(`/api/pages/${encodeURIComponent(pageId)}`, API_BASE);
+    const res = await fetch(url.toString(), { method: "DELETE", credentials: "include" });
+    if (res.status === 401) throw new UnauthorizedError();
+    if (res.status === 404) throw new NotFoundError();
+    if (!res.ok) throw new Error(`noted API error: ${res.status}`);
+  },
+
   async indexing(workspaceId: string): Promise<IndexingStatus> {
     const url = new URL(
       `/api/workspaces/${encodeURIComponent(workspaceId)}/indexing`,
